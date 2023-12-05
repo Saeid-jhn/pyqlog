@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plotting using qlog (QUIC logging format) files. 
+"""Plotting using qlog (QUIC logging format) files.
 
 This script processes qlog files and generates visualizations based on the data.
 """
@@ -7,6 +7,7 @@ This script processes qlog files and generates visualizations based on the data.
 import json
 import os
 import time
+import logging
 import argparse
 import concurrent.futures
 
@@ -26,13 +27,16 @@ def packet_direction(log_file):
         print("Log file name is not correct!")
     return direction
 
+
 def extract_data(log_dir, log_file):
     log_file_name, log_file_format = os.path.splitext(log_file)
 
     if log_file_format == '.qlog':
-        packets_list, metrics_list, offsets_list, datagram_list = parse_picoquic_log(log_dir, log_file)
+        packets_list, metrics_list, offsets_list, datagram_list = parse_picoquic_log(
+            log_dir, log_file)
     elif log_file_format == '.sqlog':
-        packets_list, metrics_list, offsets_list, datagram_list = parse_quiche_log(log_dir, log_file)
+        packets_list, metrics_list, offsets_list, datagram_list = parse_quiche_log(
+            log_dir, log_file)
     else:
         print("The log file format is not supported!")
 
@@ -66,46 +70,52 @@ def parse_quiche_log(log_dir, log_file):
                 try:
                     json_seq = json.loads(json_object)
                     if json_seq.get('name') == f'transport:{direction}':
-                        packet_dict = {'time': json_seq['time']*1000,
-                                        'packet_number': json_seq['data']['header']['packet_number'],
-                                        'packet_size': json_seq['data']['raw']['length']}
+                        packet_dict = {
+                            'time': json_seq['time'] * 1000,
+                            'packet_number': json_seq['data']['header']['packet_number'],
+                            'packet_size': json_seq['data']['raw']['length']}
                         packets_list.append(packet_dict)
 
                     if json_seq.get('name') == f'transport:{direction}':
                         frames = json_seq['data']['frames']
                         for frame in frames:
                             if frame['frame_type'] == 'stream':
-                                offset_dict = {'time': json_seq['time']*1000,
-                                                'offset': frame['offset'],
-                                                'length': frame['length'],
-                                                'goodput': None,
-                                                'goodput_no_gaps': None}
+                                offset_dict = {'time': json_seq['time'] * 1000,
+                                               'offset': frame['offset'],
+                                               'length': frame['length'],
+                                               'goodput': None,
+                                               'goodput_no_gaps': None}
                                 offsets_list.append(offset_dict)
 
                     if json_seq.get('name') == 'recovery:metrics_updated':
                         for key in json_seq['data']:
-                            if key in ["min_rtt", "smoothed_rtt", "latest_rtt", "rtt_variance"]:
+                            if key in [
+                                "min_rtt",
+                                "smoothed_rtt",
+                                "latest_rtt",
+                                "rtt_variance"]:
                                 value = json_seq['data'][key] * 1000
                             elif key == 'pacing_rate':
                                 value = json_seq['data'][key] * 8
                             else:
                                 value = json_seq['data'][key]
 
-                                metric_dict = {'time': json_seq['time']*1000,
+                                metric_dict = {'time': json_seq['time'] * 1000,
                                                'key': key,
                                                'value': value
                                                }
                                 metrics_list.append(metric_dict)
                     if json_seq.get('name') == f'transport:{direction}':
-                        datagram_dict = {'time': json_seq['time']*1000,
-                                             'length': json_seq['data']['raw']['length'],
-                                             'throughput': None}
+                        datagram_dict = {
+                            'time': json_seq['time'] * 1000,
+                            'length': json_seq['data']['raw']['length'],
+                            'throughput': None}
                         datagram_list.append(datagram_dict)
                 except json.JSONDecodeError:
-                    # print the first 100 characters
                     print(
                         f'Skipping malformed JSON object: {json_object}...')
     return packets_list, metrics_list, offsets_list, datagram_list
+
 
 def parse_picoquic_log(log_dir, log_file):
     # parsing picoqioc log (*.qlog)
@@ -119,9 +129,10 @@ def parse_picoquic_log(log_dir, log_file):
         events = json_file_load["traces"][0]["events"]
         for event in events:
             if event[1] == 'transport' and event[2] == direction:
-                packet_dict = {'time': event[0],
-                               'packet_number': event[3]['header']['packet_number'],
-                               'packet_size': event[3]['header']['packet_size']}
+                packet_dict = {
+                    'time': event[0],
+                    'packet_number': event[3]['header']['packet_number'],
+                    'packet_size': event[3]['header']['packet_size']}
                 packets_list.append(packet_dict)
                 frames = event[3]['frames']
                 for frame in frames:
@@ -146,23 +157,20 @@ def parse_picoquic_log(log_dir, log_file):
                 datagram_list.append(datagram_dict)
     return packets_list, metrics_list, offsets_list, datagram_list
 
+
 def get_time_window_size(last_time):
     return last_time / 25
 
 
 def calculate_throughput_goodput(df, metric):
     if metric == 'goodput':
-        # print('Starting goodput calculation...')
         df = df[df['duplicate'] == False]
-    else:
-        print('Starting throughput calculation...')
     last = df['time'].iloc[-1]
     time_window_size = get_time_window_size(float(last))
-    # time_window_size = 10000000  # 1 sec
+
     interval_start = df['time'].iloc[0]
     interval_end = interval_start + time_window_size
     while interval_end <= last:
-        # interval = df[(df['time'] >= interval_start) & (df['time'] < interval_end)]
         interval = df[(df['time'] >= interval_start)
                       & (df['time'] < interval_end)]
         if not interval['time'].empty:
@@ -177,6 +185,7 @@ def calculate_throughput_goodput(df, metric):
             interval_start = interval_start + time_window_size
             interval_end = interval_start + time_window_size
     return df
+
 
 def megabyte_per_sec_to_megabit_per_sec(mb_per_sec):
     return mb_per_sec * 8
@@ -203,10 +212,9 @@ def plot_figures(df_packets, df_metrics, df_offsets, df_datagram, log_file):
         sep="\N{THIN SPACE}")  # U+2009
     # time-offset/data
     ax[0].yaxis.set_major_formatter(formatter1)
-    line_0_off, = ax[0].plot(df_offsets[df_offsets['duplicate'] == False]['time'] / 1e6,
-                             df_offsets[df_offsets['duplicate']
-                                        == False]['offset'] / MB,
-                             '.', markersize=1, label="offset")
+    line_0_off, = ax[0].plot(df_offsets[df_offsets['duplicate'] == False]['time'] /
+                             1e6, df_offsets[df_offsets['duplicate'] == False]['offset'] /
+                             MB, '.', markersize=1, label="offset")
     line_0_re, = ax[0].plot(df_offsets[df_offsets['duplicate']]['time'] / 1e6,
                             df_offsets[df_offsets['duplicate']]['offset'] / MB,
                             '.', markersize=1, label="offset retransmitted")
@@ -214,27 +222,20 @@ def plot_figures(df_packets, df_metrics, df_offsets, df_datagram, log_file):
                              df_packets['packet_size_cumsum'] / MB,
                              '.', markersize=1, label="cumulative data size")
     ax[0].legend(handles=[line_0_off, line_0_re, line_0_pkt],
-                 markerscale=10,  fontsize=font_size)
+                 markerscale=10, fontsize=font_size)
     ax[0].set_ylabel('offset [MB]', fontsize=font_size)
-
-    
-
-    # ax[0].set_title(f"Data / Offset vs. Time \ns:{server} | c:{client} | {cc} | {obj_size_str} | {itr}")
 
     # pacing rate
     pacing_rate_data = df_metrics[df_metrics['key'] == "pacing_rate"]
-    line_1_pacing, = ax[1].plot(pacing_rate_data['time'] / 1e6, pacing_rate_data['value'] / MB,
-                                '.', markersize=1, label="pacing_rate")
+    line_1_pacing, = ax[1].plot(pacing_rate_data['time'] /
+                                1e6, pacing_rate_data['value'] /
+                                MB, '.', markersize=1, label="pacing_rate")
     ax[1].legend(handles=[line_1_pacing], markerscale=10, fontsize=font_size)
     ax[1].set_ylabel("pacing rate [Mbps]", fontsize=font_size)
-    # pacing_rate: defined in picoquic in the below file line #1075
-    # https://github.com/private-octopus/picoquic/blob/8a127902f11699542ae9bed10d2cffa7b02348e5/picoquic/picoquic_internal.h
 
     # cwnd, bytes_in_flight
-    # cwnd_data = df_metrics.query('key == "cwnd"')
     cwnd_data = df_metrics[df_metrics['key'].isin(
         ['cwnd', 'congestion_window'])]
-    # bytes_in_flight_data = df_metrics.query('key == "bytes_in_flight"')
     bytes_in_flight_data = df_metrics[df_metrics['key'] == "bytes_in_flight"]
     line_2_cwnd, = ax[2].plot(cwnd_data['time'] / 1e6,
                               cwnd_data['value'] / MB,
@@ -280,14 +281,21 @@ def plot_figures(df_packets, df_metrics, df_offsets, df_datagram, log_file):
     ax[4].set_ylabel("data rate [Mbps]", fontsize=font_size)
     ax[4].set_xlabel("Time [s]", fontsize=font_size)
     fig.align_ylabels(ax[:])
-    
+
     fig.suptitle(
         f"Data / Offset vs. Time \n{log_file_name}", fontsize=font_size)
     fig.tight_layout()
     return fig
 
 
-def save_data_and_figures(df_packets, df_metrics, df_offsets, df_datagram, fig, log_file, log_dir):
+def save_data_and_figures(
+        df_packets,
+        df_metrics,
+        df_offsets,
+        df_datagram,
+        fig,
+        log_file,
+        log_dir):
     log_file_name, log_file_format = os.path.splitext(log_file)
     df_packets.to_csv(f"{log_dir}/{log_file_name}_packets.csv", index=False)
     df_metrics.to_csv(f"{log_dir}/{log_file_name}_metrics.csv", index=False)
@@ -299,6 +307,14 @@ def save_data_and_figures(df_packets, df_metrics, df_offsets, df_datagram, fig, 
 
 
 def process_file(log_dir, log_file):
+    """
+    Process a single log file by extracting data, calculating metrics,
+    plotting figures, and saving the results.
+
+    :param log_dir: Directory containing the log file.
+    :param log_file: Name of the log file to be processed.
+    :return: Tuple containing the log file name and processing time or None in case of error.
+    """
     try:
         print(f"Processing file: {log_file}")
         start_time = time.time()
@@ -309,25 +325,44 @@ def process_file(log_dir, log_file):
         df_offsets[df_offsets['duplicate'] ==
                    False] = calculate_throughput_goodput(df_offsets, 'goodput')
 
-        fig = plot_figures(df_packets, df_metrics,
-                           df_offsets, df_datagram, log_file)
-        save_data_and_figures(df_packets, df_metrics, df_offsets,
-                              df_datagram, fig, log_file, log_dir)
+        fig = plot_figures(
+            df_packets,
+            df_metrics,
+            df_offsets,
+            df_datagram,
+            log_file)
+        save_data_and_figures(
+            df_packets,
+            df_metrics,
+            df_offsets,
+            df_datagram,
+            fig,
+            log_file,
+            log_dir)
 
         elapsed_time = time.time() - start_time
         return log_file, elapsed_time
-    except json.JSONDecodeError as e:
+    except (json.JSONDecodeError, FileNotFoundError, IOError) as e:
+        logging.error(f"Error processing {log_file}: {e}")
         print(f"Error processing {log_file}: {e}")
         return log_file, None
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Process qlog files and generate visualizations.')
-    parser.add_argument('log_dir', type=str, help='Directory containing qlog files')
-    parser.add_argument('--file', type=str, help='Specific qlog file to process', required=False)
+    parser = argparse.ArgumentParser(
+        description='Process qlog files and generate visualizations.')
+    parser.add_argument(
+        'log_dir',
+        type=str,
+        help='Directory containing qlog files')
+    parser.add_argument(
+        '--file',
+        type=str,
+        help='Specific qlog file to process',
+        required=False)
     args = parser.parse_args()
-
     print("Expected file format: filename.[server|client].[sqlog|qlog]")
+    logging.basicConfig(level=logging.INFO)
     start_time_total = time.time()
 
     if args.file:
@@ -344,7 +379,9 @@ def main():
 
     else:
         # Process all files in the directory
-        list_log_files_in_dir = [f for f in os.listdir(args.log_dir) if is_valid_file(f)]
+        list_log_files_in_dir = [
+            f for f in os.listdir(
+                args.log_dir) if is_valid_file(f)]
         total_files = len(list_log_files_in_dir)
 
         if total_files == 0:
@@ -354,19 +391,22 @@ def main():
             print(f"Processing all valid files in directory: {args.log_dir}")
 
         with concurrent.futures.ProcessPoolExecutor() as executor:
-        # The map method blocks until all results are returned
-            for log_file, elapsed_time in executor.map(process_file, [args.log_dir]*total_files, list_log_files_in_dir):
+            # The map method blocks until all results are returned
+            for log_file, elapsed_time in executor.map(
+                    process_file, [args.log_dir] * total_files, list_log_files_in_dir):
                 if elapsed_time is None:
                     print(f"Error processing {log_file}")
                 else:
                     processed_files += 1
-                    print(f"Processed {log_file} in {elapsed_time} seconds. ({processed_files}/{total_files} files completed.)")
+                    print(
+                        f"Processed {log_file} in {elapsed_time} seconds. ({processed_files}/{total_files} files completed.)")
     print(f"\nTotal run time: {time.time() - start_time_total}")
 
 
 def is_valid_file(filename):
     parts = filename.split('.')
-    return len(parts) >= 3 and parts[-2] in ['server', 'client'] and parts[-1] in ['sqlog', 'qlog']
+    return len(parts) >= 3 and parts[-2] in ['server',
+                                             'client'] and parts[-1] in ['sqlog', 'qlog']
 
 
 if __name__ == "__main__":
