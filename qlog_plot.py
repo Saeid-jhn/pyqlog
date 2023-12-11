@@ -8,57 +8,82 @@ import json
 import os
 import time
 import logging
+import traceback
 import argparse
 import concurrent.futures
+from enum import Enum
 
 import matplotlib.pyplot as plt
 from matplotlib.ticker import EngFormatter
 import pandas as pd
 import seaborn as sns
 
+class QlogFormat(Enum):
+    SQLOG = '.sqlog'
+    QLOG = '.qlog'
 
-def packet_direction(log_file):
-    log_file_name, log_file_format = os.path.splitext(log_file)
-    if log_file_name.split('.')[-1] == 'server':
+
+
+def packet_direction(qlog_file):
+    qlog_file_name, qlog_file_format = os.path.splitext(qlog_file)
+    if qlog_file_name.split('.')[-1] == 'server':
         direction = 'packet_sent'
-    elif log_file_name.split('.')[-1] == 'client':
+    elif qlog_file_name.split('.')[-1] == 'client':
         direction = 'packet_received'
     else:
         print("Log file name is not correct!")
     return direction
 
 
-def extract_data(log_dir, log_file):
-    log_file_name, log_file_format = os.path.splitext(log_file)
+def extract_data(qlog_dir, qlog_file):
+    """
+    Extract data from a qlog file and convert it to DataFrames.
 
-    if log_file_format == '.qlog':
-        packets_list, metrics_list, offsets_list, datagram_list = parse_picoquic_log(
-            log_dir, log_file)
-    elif log_file_format == '.sqlog':
-        packets_list, metrics_list, offsets_list, datagram_list = parse_quiche_log(
-            log_dir, log_file)
+    :param qlog_dir: Directory containing the qlog file.
+    :param qlog_file: Name of the qlog file to be processed.
+    :return: A tuple of DataFrames (df_packets, df_metrics, df_offsets, df_datagram).
+    """
+    if qlog_file.endswith(QlogFormat.QLOG.value):
+        packets_list, metrics_list, offsets_list, datagram_list = parse_picoquic_log(qlog_dir, qlog_file)
+    elif qlog_file.endswith(QlogFormat.SQLOG.value):
+        packets_list, metrics_list, offsets_list, datagram_list = parse_quiche_log(qlog_dir, qlog_file)
     else:
-        print("The log file format is not supported!")
+        logging.error("The qlog file format is not supported!")
+        return None, None, None, None
+    
+    return create_dataframes(packets_list, metrics_list, offsets_list, datagram_list)
 
-    # Convert list of dicts to DataFrame after loop ends
+
+def create_dataframes(packets_list, metrics_list, offsets_list, datagram_list):
+    """
+    Convert lists of dictionaries to Pandas DataFrames.
+
+    :param packets_list: List of packet dictionaries.
+    :param metrics_list: List of metrics dictionaries.
+    :param offsets_list: List of offsets dictionaries.
+    :param datagram_list: List of datagram dictionaries.
+    :return: A tuple of DataFrames (df_packets, df_metrics, df_offsets, df_datagram).
+    """
     df_packets = pd.DataFrame(packets_list)
     df_metrics = pd.DataFrame(metrics_list)
     df_offsets = pd.DataFrame(offsets_list)
     df_datagram = pd.DataFrame(datagram_list)
+
     df_packets['duplicate'] = df_packets.duplicated(subset=['packet_number'])
     df_packets['packet_size_cumsum'] = df_packets.packet_size.cumsum()
     df_offsets['duplicate'] = df_offsets.duplicated(subset=['offset'])
+
     return df_packets, df_metrics, df_offsets, df_datagram
 
 
-def parse_quiche_log(log_dir, log_file):
+def parse_quiche_log(qlog_dir, qlog_file):
     # parsing quiche log (*.sqlog)
     packets_list = []
     metrics_list = []
     offsets_list = []
     datagram_list = []
-    direction = packet_direction(log_file)
-    with open(f'{log_dir}{log_file}', 'r') as json_file_read:
+    direction = packet_direction(qlog_file)
+    with open(f'{qlog_dir}{qlog_file}', 'r') as json_file_read:
         content = json_file_read.read()
         # split the input data into individual JSON texts
         # \u001E is the ASCII Record Separator (RS) character
@@ -117,14 +142,14 @@ def parse_quiche_log(log_dir, log_file):
     return packets_list, metrics_list, offsets_list, datagram_list
 
 
-def parse_picoquic_log(log_dir, log_file):
+def parse_picoquic_log(qlog_dir, qlog_file):
     # parsing picoqioc log (*.qlog)
     packets_list = []
     metrics_list = []
     offsets_list = []
     datagram_list = []
-    direction = packet_direction(log_file)
-    with open(f'{log_dir}{log_file}', 'r') as json_file_read:
+    direction = packet_direction(qlog_file)
+    with open(f'{qlog_dir}{qlog_file}', 'r') as json_file_read:
         json_file_load = json.load(json_file_read)
         events = json_file_load["traces"][0]["events"]
         for event in events:
@@ -191,14 +216,14 @@ def megabyte_per_sec_to_megabit_per_sec(mb_per_sec):
     return mb_per_sec * 8
 
 
-def plot_figures(df_packets, df_metrics, df_offsets, df_datagram, log_file):
+def plot_figures(df_packets, df_metrics, df_offsets, df_datagram, qlog_file):
     sns.set()
     plt.rcParams['font.family'] = 'serif'
     plt.rcParams['font.serif'] = [
         'Times New Roman'] + plt.rcParams['font.serif']
     # This will change the default font size for all text
     plt.rcParams['font.size'] = 12
-    log_file_name, log_file_format = os.path.splitext(log_file)
+    qlog_file_name, qlog_file_format = os.path.splitext(qlog_file)
     font_size = 12
     MB = 1000**2
     fig, ax = plt.subplots(5, 1, figsize=(4, 10), sharex=True)
@@ -283,7 +308,7 @@ def plot_figures(df_packets, df_metrics, df_offsets, df_datagram, log_file):
     fig.align_ylabels(ax[:])
 
     fig.suptitle(
-        f"Data / Offset vs. Time \n{log_file_name}", fontsize=font_size)
+        f"Data / Offset vs. Time \n{qlog_file_name}", fontsize=font_size)
     fig.tight_layout()
     return fig
 
@@ -294,65 +319,81 @@ def save_data_and_figures(
         df_offsets,
         df_datagram,
         fig,
-        log_file,
-        log_dir):
-    log_file_name, log_file_format = os.path.splitext(log_file)
-    df_packets.to_csv(f"{log_dir}/{log_file_name}_packets.csv", index=False)
-    df_metrics.to_csv(f"{log_dir}/{log_file_name}_metrics.csv", index=False)
-    df_datagram.to_csv(f'{log_dir}/{log_file_name}_datagram.csv', index=False)
-    df_offsets.to_csv(f'{log_dir}/{log_file_name}_offsets.csv', index=False)
-    plt.savefig(f"{log_dir}/{log_file_name}.pdf")
-    plt.savefig(f"{log_dir}/{log_file_name}.png", dpi=600)
+        qlog_file,
+        qlog_dir):
+    qlog_file_name, qlog_file_format = os.path.splitext(qlog_file)
+    df_packets.to_csv(f"{qlog_dir}/{qlog_file_name}_packets.csv", index=False)
+    df_metrics.to_csv(f"{qlog_dir}/{qlog_file_name}_metrics.csv", index=False)
+    df_datagram.to_csv(f'{qlog_dir}/{qlog_file_name}_datagram.csv', index=False)
+    df_offsets.to_csv(f'{qlog_dir}/{qlog_file_name}_offsets.csv', index=False)
+    plt.savefig(f"{qlog_dir}/{qlog_file_name}.pdf")
+    plt.savefig(f"{qlog_dir}/{qlog_file_name}.png", dpi=600)
     pass
 
 
-def process_file(log_dir, log_file):
+def process_file(qlog_dir, qlog_file):
     """
     Process a single log file by extracting data, calculating metrics,
     plotting figures, and saving the results.
 
-    :param log_dir: Directory containing the log file.
-    :param log_file: Name of the log file to be processed.
+    :param qlog_dir: Directory containing the log file.
+    :param qlog_file: Name of the log file to be processed.
     :return: Tuple containing the log file name and processing time or None in case of error.
     """
     try:
-        print(f"Processing file: {log_file}")
+        logging.info(f"Processing file: {qlog_file}")
         start_time = time.time()
-        df_packets, df_metrics, df_offsets, df_datagram = extract_data(
-            log_dir, log_file)
+        df_packets, df_metrics, df_offsets, df_datagram = extract_data(qlog_dir, qlog_file)
+        df_datagram, df_offsets = process_data(df_datagram, df_offsets)
 
-        df_datagram = calculate_throughput_goodput(df_datagram, 'throughput')
-        df_offsets[df_offsets['duplicate'] ==
-                   False] = calculate_throughput_goodput(df_offsets, 'goodput')
+        # df_datagram = calculate_throughput_goodput(df_datagram, 'throughput')
+        # df_offsets[df_offsets['duplicate'] ==
+        #            False] = calculate_throughput_goodput(df_offsets, 'goodput')
 
         fig = plot_figures(
             df_packets,
             df_metrics,
             df_offsets,
             df_datagram,
-            log_file)
+            qlog_file)
         save_data_and_figures(
             df_packets,
             df_metrics,
             df_offsets,
             df_datagram,
             fig,
-            log_file,
-            log_dir)
+            qlog_file,
+            qlog_dir)
 
         elapsed_time = time.time() - start_time
-        return log_file, elapsed_time
+        return qlog_file, elapsed_time
     except (json.JSONDecodeError, FileNotFoundError, IOError) as e:
-        logging.error(f"Error processing {log_file}: {e}")
-        print(f"Error processing {log_file}: {e}")
-        return log_file, None
+        logging.error(f"Error processing {qlog_file}: {e}")
+        return qlog_file, None
+
+
+def process_data(df_datagram, df_offsets):
+    """
+    Process the data frames to calculate throughput and goodput.
+
+    :param df_datagram: Data frame containing datagram information.
+    :param df_offsets: Data frame containing offsets information.
+    :return: Processed data frames.
+    """
+    df_datagram = calculate_throughput_goodput(df_datagram, 'throughput')
+    df_offsets_processed = calculate_throughput_goodput(df_offsets[df_offsets['duplicate'] == False], 'goodput')
+    return df_datagram, df_offsets_processed
 
 
 def main():
+    """
+    Processes qlog files in a specified directory. 
+    Can process a single file or all files in a directory.
+    """
     parser = argparse.ArgumentParser(
         description='Process qlog files and generate visualizations.')
     parser.add_argument(
-        'log_dir',
+        'qlog_dir',
         type=str,
         help='Directory containing qlog files')
     parser.add_argument(
@@ -361,56 +402,85 @@ def main():
         help='Specific qlog file to process',
         required=False)
     args = parser.parse_args()
-    print("Expected file format: filename.[server|client].[sqlog|qlog]")
-    logging.basicConfig(level=logging.INFO)
+
+    logging.info("Expected file format: filename.[QUIC logging format]")
+    
     start_time_total = time.time()
 
     if args.file:
-        # Process only the specified file
-        if is_valid_file(args.file):
-            file_path = os.path.join(args.log_dir, args.file)
-            if os.path.exists(file_path):
-                print(f"Processing file: {file_path}")
-                process_file(args.log_dir, args.file)
-            else:
-                print(f"File not found: {file_path}")
-        else:
-            print(f"Invalid file format: {args.file}")
-
+        process_single_file(args.qlog_dir, args.file)
     else:
-        # Process all files in the directory
-        list_log_files_in_dir = [
-            f for f in os.listdir(
-                args.log_dir) if is_valid_file(f)]
-        total_files = len(list_log_files_in_dir)
-
-        if total_files == 0:
-            print("No valid files found in directory.")
-        else:
-            processed_files = 0
-            print(f"Processing all valid files in directory: {args.log_dir}")
-
-        with concurrent.futures.ProcessPoolExecutor() as executor:
-            # The map method blocks until all results are returned
-            for log_file, elapsed_time in executor.map(
-                    process_file, [args.log_dir] * total_files, list_log_files_in_dir):
-                if elapsed_time is None:
-                    print(f"Error processing {log_file}")
-                else:
-                    processed_files += 1
-                    print(
-                        f"Processed {log_file} in {elapsed_time} seconds. ({processed_files}/{total_files} files completed.)")
-    print(f"\nTotal run time: {time.time() - start_time_total}")
+        process_all_files(args.qlog_dir)
+        
+    logging.info(f"Total run time: {time.time() - start_time_total}")
 
 
+def process_single_file(qlog_dir, qlog_file):
+    """
+    Process a single qlog file.
+
+    :param qlog_dir: Directory containing the qlog file.
+    :param qlog_file: Name of the qlog file to process.
+    """
+    file_path = os.path.join(qlog_dir, qlog_file)
+    
+    if not os.path.exists(file_path):
+        logging.error(f"File not found: {file_path}")
+        return
+
+    if not is_valid_file(qlog_file):
+        logging.error(f"Invalid file format: {qlog_file}")
+        return
+
+    logging.info(f"Processing file: {file_path}")
+    try:
+        process_file(qlog_dir, file)
+    except Exception as e:
+        logging.error(f"Error processing {qlog_file}: {e}")
+
+
+def process_all_files(qlog_dir):
+    """
+    Process all valid qlog files in the specified directory.
+
+    :param qlog_dir: Directory containing the qlog files.
+    """
+    list_qlog_files = [f for f in os.listdir(qlog_dir) if is_valid_file(f)]
+    
+    if not list_qlog_files:
+        logging.info("No valid qlog files found in the directory.")
+        return
+
+    logging.info(f"Processing all valid qlog files in directory: {qlog_dir}")
+    processed_files = 0
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        for qlog_file, elapsed_time in executor.map(process_file, [qlog_dir] * len(list_qlog_files), list_qlog_files):
+            if elapsed_time is None:
+                logging.error(f"Error processing {qlog_file}")
+            else:
+                processed_files += 1
+                logging.info(f"Processed {qlog_file} in {elapsed_time} seconds.")
+    logging.info(f"Processed {processed_files}/{len(list_qlog_files)} files.")
+
+
+# def is_valid_file(filename):
+#     parts = filename.split('.')
+#     return len(parts) >= 3 and parts[-2] in ['server',
+#                                              'client'] and parts[-1] in ['sqlog', 'qlog']
 def is_valid_file(filename):
-    parts = filename.split('.')
-    return len(parts) >= 3 and parts[-2] in ['server',
-                                             'client'] and parts[-1] in ['sqlog', 'qlog']
+    """
+    Check if the filename has a valid qlog format.
+
+    :param filename: The name of the file to check.
+    :return: True if the file has a valid qlog format, False otherwise.
+    """
+    return any(filename.endswith(fmt.value) for fmt in QlogFormat)
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     try:
         main()
     except Exception as e:
-        print(f"An error occurred: {e}")
+        logging.error(f"An error occurred: {e}")
+        logging.debug(traceback.format_exc())  # Logs the full stack trace at debug level
