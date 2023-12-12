@@ -27,3 +27,8 @@ If you want to process a specific qlog file, use the `--file` option followed by
 ```
 python path/to/script.py /path/to/qlog/directory --file example.qlog
 ```
+### Debug
+To enable **DEBUG** mode, use the `--debug` option:
+```
+python path/to/script.py /path/to/qlog/directory [--file example.qlog] --debug
+```
