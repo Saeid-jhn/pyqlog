@@ -482,7 +482,14 @@ def main():
         type=str,
         help='Specific qlog file to process',
         required=False)
+    parser.add_argument('--debug', action='store_true', help='Enable debug mode')
     args = parser.parse_args()
+
+    # Configure logging based on the debug mode
+    if args.debug:
+        logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+    else:
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
     logging.info("Expected file format: filename.[QUIC logging format]")
 
@@ -555,9 +562,6 @@ def is_valid_file(filename):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    # TODO: Add a switch for enabling debug mode
-    # logging.basicConfig(filename='app.log', filemode='w', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
     try:
         main()
     except Exception as e:
