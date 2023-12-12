@@ -23,18 +23,6 @@ class QlogFormat(Enum):
     QLOG = '.qlog'
 
 
-
-def packet_direction(qlog_file):
-    qlog_file_name, qlog_file_format = os.path.splitext(qlog_file)
-    if qlog_file_name.split('.')[-1] == 'server':
-        direction = 'packet_sent'
-    elif qlog_file_name.split('.')[-1] == 'client':
-        direction = 'packet_received'
-    else:
-        print("Log file name is not correct!")
-    return direction
-
-
 def extract_data(qlog_dir, qlog_file):
     """
     Extract data from a qlog file and convert it to DataFrames.
@@ -64,123 +52,208 @@ def create_dataframes(packets_list, metrics_list, offsets_list, datagram_list):
     :param datagram_list: List of datagram dictionaries.
     :return: A tuple of DataFrames (df_packets, df_metrics, df_offsets, df_datagram).
     """
-    df_packets = pd.DataFrame(packets_list)
-    df_metrics = pd.DataFrame(metrics_list)
-    df_offsets = pd.DataFrame(offsets_list)
-    df_datagram = pd.DataFrame(datagram_list)
+    try:
+        df_packets = pd.DataFrame(packets_list)
+        df_metrics = pd.DataFrame(metrics_list)
+        df_offsets = pd.DataFrame(offsets_list)
+        df_datagram = pd.DataFrame(datagram_list)
 
-    df_packets['duplicate'] = df_packets.duplicated(subset=['packet_number'])
-    df_packets['packet_size_cumsum'] = df_packets.packet_size.cumsum()
-    df_offsets['duplicate'] = df_offsets.duplicated(subset=['offset'])
+        if 'packet_number' in df_packets.columns:
+            df_packets['duplicate'] = df_packets.duplicated(subset=['packet_number'])
+            df_packets['packet_size_cumsum'] = df_packets.packet_size.cumsum()
+        
+        if 'offset' in df_offsets.columns:
+            df_offsets['duplicate'] = df_offsets.duplicated(subset=['offset'])
+
+    except Exception as e:
+        logging.error(f"Error creating DataFrames: {e}")
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
     return df_packets, df_metrics, df_offsets, df_datagram
 
-
 def parse_quiche_log(qlog_dir, qlog_file):
-    # parsing quiche log (*.sqlog)
+    """
+    Parse a quiche log file and extract relevant data.
+
+    :param qlog_dir: Directory containing the qlog file.
+    :param qlog_file: Name of the qlog file to be processed.
+    :return: Tuple containing lists for packets, metrics, offsets, and datagrams.
+    """
+
     packets_list = []
     metrics_list = []
     offsets_list = []
     datagram_list = []
-    direction = packet_direction(qlog_file)
-    with open(f'{qlog_dir}{qlog_file}', 'r') as json_file_read:
-        content = json_file_read.read()
-        # split the input data into individual JSON texts
-        # \u001E is the ASCII Record Separator (RS) character
-        json_objects = content.split('\u001E')
-        for json_object in json_objects:
-            # remove the line feed at the end of the json_text
-            json_object = json_object.strip()
-            if json_object:  # check the string is not empty
-                try:
-                    json_seq = json.loads(json_object)
-                    if json_seq.get('name') == f'transport:{direction}':
-                        packet_dict = {
-                            'time': json_seq['time'] * 1000,
-                            'packet_number': json_seq['data']['header']['packet_number'],
-                            'packet_size': json_seq['data']['raw']['length']}
-                        packets_list.append(packet_dict)
 
-                    if json_seq.get('name') == f'transport:{direction}':
-                        frames = json_seq['data']['frames']
-                        for frame in frames:
-                            if frame['frame_type'] == 'stream':
-                                offset_dict = {'time': json_seq['time'] * 1000,
-                                               'offset': frame['offset'],
-                                               'length': frame['length'],
-                                               'goodput': None,
-                                               'goodput_no_gaps': None}
-                                offsets_list.append(offset_dict)
+    try:
+        with open(os.path.join(qlog_dir, qlog_file), 'r') as json_file:
+            content = json_file.read()
+            
+            # split the input data into individual JSON texts
+            # \u001E is the ASCII Record Separator (RS) character
+            json_objects = content.split('\u001E')
 
-                    if json_seq.get('name') == 'recovery:metrics_updated':
-                        for key in json_seq['data']:
-                            if key in [
-                                "min_rtt",
-                                "smoothed_rtt",
-                                "latest_rtt",
-                                "rtt_variance"]:
-                                value = json_seq['data'][key] * 1000
-                            elif key == 'pacing_rate':
-                                value = json_seq['data'][key] * 8
-                            else:
-                                value = json_seq['data'][key]
+            # Extract role from the first JSON object
+            first_json_object = json_objects[1]
+            if first_json_object:
+                first_json_data = json.loads(first_json_object)
+                role = first_json_data.get('title', None)
+            
+            packet_direction = get_packet_direction(role)
 
-                                metric_dict = {'time': json_seq['time'] * 1000,
-                                               'key': key,
-                                               'value': value
-                                               }
-                                metrics_list.append(metric_dict)
-                    if json_seq.get('name') == f'transport:{direction}':
-                        datagram_dict = {
-                            'time': json_seq['time'] * 1000,
-                            'length': json_seq['data']['raw']['length'],
-                            'throughput': None}
-                        datagram_list.append(datagram_dict)
-                except json.JSONDecodeError:
-                    print(
-                        f'Skipping malformed JSON object: {json_object}...')
+            # Process remaining JSON objects
+            for json_object in json_objects:
+                json_object = json_object.strip()   # remove the line feed at the end of the json_text
+                if json_object:  # check the string is not empty
+                    process_quiche_json_object(json_object, packet_direction, packets_list, metrics_list, offsets_list, datagram_list)
+
+    except json.JSONDecodeError as e:
+        logging.error(f"Error decoding JSON for file {qlog_file}: {e}")
+        return [], [], [], []
+    
     return packets_list, metrics_list, offsets_list, datagram_list
+
+
+def process_quiche_json_object(json_object, packet_direction, packets_list, metrics_list, offsets_list, datagram_list):
+    """
+    Process a single JSON object from the quiche qlog file.
+
+    :param json_object: Single JSON object from the qlog file.
+    :param packets_list: List to store packet data.
+    :param metrics_list: List to store metrics data.
+    :param offsets_list: List to store offsets data.
+    :param datagram_list: List to store datagram data.
+    """
+    try:
+        json_seq = json.loads(json_object)
+
+        if json_seq.get('name') == f'transport:{packet_direction}':
+            packet_dict = {'time': json_seq['time'] * 1000, 
+                           'packet_number': json_seq['data']['header']['packet_number'], 
+                           'packet_size': json_seq['data']['raw']['length']}
+            packets_list.append(packet_dict)
+
+            frames = json_seq['data']['frames']
+            for frame in frames:
+                if frame['frame_type'] == 'stream':
+                    offset_dict = {'time': json_seq['time'] * 1000,
+                                    'offset': frame['offset'],
+                                    'length': frame['length'],
+                                    'goodput': None,
+                                    'goodput_no_gaps': None}
+                    offsets_list.append(offset_dict)
+
+
+            datagram_dict = {'time': json_seq['time'] * 1000,
+                             'length': json_seq['data']['raw']['length'],
+                             'throughput': None}
+            datagram_list.append(datagram_dict)
+
+
+        if json_seq.get('name') == 'recovery:metrics_updated':
+            for key in json_seq['data']:
+                if key in ["min_rtt",
+                           "smoothed_rtt",
+                           "latest_rtt",
+                           "rtt_variance"]:
+                    value = json_seq['data'][key] * 1000
+                elif key == 'pacing_rate':
+                    value = json_seq['data'][key] * 8
+                else:
+                    value = json_seq['data'][key]
+
+                    metric_dict = {'time': json_seq['time'] * 1000,
+                                   'key': key,
+                                   'value': value}
+                    metrics_list.append(metric_dict)
+    except json.JSONDecodeError:
+        logging.warning(f"Skipping malformed JSON object: {json_object[:100]}...")
 
 
 def parse_picoquic_log(qlog_dir, qlog_file):
-    # parsing picoqioc log (*.qlog)
+    """
+    Parse a picoquic log file and extract relevant data.
+
+    :param qlog_dir: Directory containing the qlog file.
+    :param qlog_file: Name of the qlog file to be processed.
+    :return: Tuple containing lists for packets, metrics, offsets, and datagrams.
+    """
     packets_list = []
     metrics_list = []
     offsets_list = []
     datagram_list = []
-    direction = packet_direction(qlog_file)
-    with open(f'{qlog_dir}{qlog_file}', 'r') as json_file_read:
-        json_file_load = json.load(json_file_read)
-        events = json_file_load["traces"][0]["events"]
-        for event in events:
-            if event[1] == 'transport' and event[2] == direction:
-                packet_dict = {
-                    'time': event[0],
-                    'packet_number': event[3]['header']['packet_number'],
-                    'packet_size': event[3]['header']['packet_size']}
-                packets_list.append(packet_dict)
-                frames = event[3]['frames']
-                for frame in frames:
-                    if frame['frame_type'] == 'stream':
-                        offset_dict = {'time': event[0],
-                                       'offset': frame['offset'],
-                                       'length': frame['length'],
-                                       'goodput': None,
-                                       'goodput_no_gaps': None}
-                        offsets_list.append(offset_dict)
-            if event[1] == 'recovery' and event[2] == 'metrics_updated':
-                for key in event[3]:
-                    metric_dict = {'time': event[0],
-                                   'key': key,
-                                   'value': event[3][key]}
-                    metrics_list.append(metric_dict)
 
-            if event[1] == 'transport' and event[2] == direction:
-                datagram_dict = {'time': event[0],
-                                 'length': event[3]['header']['packet_size'],
-                                 'throughput': None}
-                datagram_list.append(datagram_dict)
+    try:
+        with open(os.path.join(qlog_dir, qlog_file), 'r') as json_file:
+            json_file_load = json.load(json_file)
+            events = json_file_load["traces"][0]["events"]
+            role = json_file_load['traces'][0]['vantage_point']['type']
+            packet_direction = get_packet_direction(role)
+
+            for event in events:
+                process_picoquic_event(event, packet_direction, packets_list, metrics_list, offsets_list, datagram_list)
+            
+    except json.JSONDecodeError as e:
+        logging.error(f"Error decoding JSON for file {qlog_file}: {e}")
+        return [], [], [], []
+    
     return packets_list, metrics_list, offsets_list, datagram_list
+
+
+def get_packet_direction(role):
+    """
+    Determine the packet direction based on the role.
+
+    :param role: The role (server or client) from the qlog file.
+    :return: The packet direction as a string.
+    """
+    if role == 'server' or role == "quiche-server qlog":
+        return 'packet_sent'
+    elif role == 'client' or role == "quiche-client qlog":
+        return 'packet_received'
+    else:
+        logging.warning(f"Role for qlog file is not realized: {role}")
+        return None
+
+
+def process_picoquic_event(event, packet_direction, packets_list, metrics_list, offsets_list, datagram_list):
+    """
+    Process a single event from the qlog file.
+
+    :param event: Single qlog event.
+    :param packet_direction: The packet direction (sent or received).
+    :param packets_list: List to store packet data.
+    :param metrics_list: List to store metrics data.
+    :param offsets_list: List to store offsets data.
+    :param datagram_list: List to store datagram data.
+    """
+    if event[1] == 'transport' and event[2] == packet_direction:
+        packet_dict = {'time': event[0],
+                        'packet_number': event[3]['header']['packet_number'],
+                        'packet_size': event[3]['header']['packet_size']}
+        packets_list.append(packet_dict)
+
+        frames = event[3]['frames']
+        for frame in frames:
+            if frame['frame_type'] == 'stream':
+                offset_dict = {'time': event[0],
+                                'offset': frame['offset'],
+                                'length': frame['length'],
+                                'goodput': None,
+                                'goodput_no_gaps': None}
+                offsets_list.append(offset_dict)
+
+        datagram_dict = {'time': event[0],
+                         'length': event[3]['header']['packet_size'],
+                         'throughput': None}
+        datagram_list.append(datagram_dict)
+    
+    if event[1] == 'recovery' and event[2] == 'metrics_updated':
+        for key in event[3]:
+            metric_dict = {'time': event[0],
+                            'key': key,
+                            'value': event[3][key]}
+            metrics_list.append(metric_dict)    
 
 
 def get_time_window_size(last_time):
@@ -188,28 +261,38 @@ def get_time_window_size(last_time):
 
 
 def calculate_throughput_goodput(df, metric):
-    if metric == 'goodput':
-        df = df[df['duplicate'] == False]
-    last = df['time'].iloc[-1]
-    time_window_size = get_time_window_size(float(last))
+    try:
+        if df.empty:
+            raise ValueError("DataFrame is empty")
 
-    interval_start = df['time'].iloc[0]
-    interval_end = interval_start + time_window_size
-    while interval_end <= last:
-        interval = df[(df['time'] >= interval_start)
-                      & (df['time'] < interval_end)]
-        if not interval['time'].empty:
-            interval_sum = interval['length'].sum()
-            metric_val = interval_sum / time_window_size
-            metric_val = megabyte_per_sec_to_megabit_per_sec(metric_val)
-            df.loc[df["time"] == interval['time'].iloc[0], metric] = metric_val
-            # updated the next interval:
-            interval_start = interval['time'].iloc[0] + 1
-            interval_end = interval_start + time_window_size
-        else:
-            interval_start = interval_start + time_window_size
-            interval_end = interval_start + time_window_size
-    return df
+        if metric == 'goodput':
+            df = df[df['duplicate'] == False]
+
+        last = df['time'].iloc[-1]
+        time_window_size = get_time_window_size(float(last))
+
+        interval_start = df['time'].iloc[0]
+        interval_end = interval_start + time_window_size
+        while interval_end <= last:
+            interval = df[(df['time'] >= interval_start)
+                        & (df['time'] < interval_end)]
+            if not interval.empty:
+                interval_sum = interval['length'].sum()
+                metric_val = interval_sum / time_window_size
+                metric_val = megabyte_per_sec_to_megabit_per_sec(metric_val)
+                df.loc[df["time"] == interval['time'].iloc[0], metric] = metric_val
+                # updated the next interval:
+                interval_start = interval['time'].iloc[0] + 1
+                interval_end = interval_start + time_window_size
+            else:
+                interval_start = interval_start + time_window_size
+                interval_end = interval_start + time_window_size
+        
+        return df
+    
+    except Exception as e:
+        logging.error(f"Error in calculate_throughput_goodput: {e}")
+        return pd.DataFrame()
 
 
 def megabyte_per_sec_to_megabit_per_sec(mb_per_sec):
@@ -218,13 +301,13 @@ def megabyte_per_sec_to_megabit_per_sec(mb_per_sec):
 
 def plot_figures(df_packets, df_metrics, df_offsets, df_datagram, qlog_file):
     sns.set()
-    plt.rcParams['font.family'] = 'serif'
-    plt.rcParams['font.serif'] = [
-        'Times New Roman'] + plt.rcParams['font.serif']
+    # plt.rcParams['font.family'] = 'serif'
+    # plt.rcParams['font.serif'] = [
+    #     'Times New Roman'] + plt.rcParams['font.serif']
     # This will change the default font size for all text
-    plt.rcParams['font.size'] = 12
+    plt.rcParams['font.size'] = 10
     qlog_file_name, qlog_file_format = os.path.splitext(qlog_file)
-    font_size = 12
+    font_size = 10
     MB = 1000**2
     fig, ax = plt.subplots(5, 1, figsize=(4, 10), sharex=True)
 
@@ -346,10 +429,6 @@ def process_file(qlog_dir, qlog_file):
         df_packets, df_metrics, df_offsets, df_datagram = extract_data(qlog_dir, qlog_file)
         df_datagram, df_offsets = process_data(df_datagram, df_offsets)
 
-        # df_datagram = calculate_throughput_goodput(df_datagram, 'throughput')
-        # df_offsets[df_offsets['duplicate'] ==
-        #            False] = calculate_throughput_goodput(df_offsets, 'goodput')
-
         fig = plot_figures(
             df_packets,
             df_metrics,
@@ -380,9 +459,18 @@ def process_data(df_datagram, df_offsets):
     :param df_offsets: Data frame containing offsets information.
     :return: Processed data frames.
     """
-    df_datagram = calculate_throughput_goodput(df_datagram, 'throughput')
-    df_offsets_processed = calculate_throughput_goodput(df_offsets[df_offsets['duplicate'] == False], 'goodput')
-    return df_datagram, df_offsets_processed
+    try:
+        df_datagram_processed = calculate_throughput_goodput(df_datagram, 'throughput')
+        df_offsets_processed = calculate_throughput_goodput(df_offsets[df_offsets['duplicate'] == False], 'goodput')
+        # df_offsets[df_offsets['duplicate'] == False] = calculate_throughput_goodput(df_offsets, 'goodput')
+
+        return df_datagram_processed, df_offsets_processed
+    
+    except Exception as e:
+        logging.error(f"Error in processing data frames: {e}")
+        # Return original data frames in case of error
+        return df_datagram, df_offsets
+    
 
 
 def main():
@@ -434,7 +522,7 @@ def process_single_file(qlog_dir, qlog_file):
 
     logging.info(f"Processing file: {file_path}")
     try:
-        process_file(qlog_dir, file)
+        process_file(qlog_dir, qlog_file)
     except Exception as e:
         logging.error(f"Error processing {qlog_file}: {e}")
 
@@ -463,10 +551,6 @@ def process_all_files(qlog_dir):
     logging.info(f"Processed {processed_files}/{len(list_qlog_files)} files.")
 
 
-# def is_valid_file(filename):
-#     parts = filename.split('.')
-#     return len(parts) >= 3 and parts[-2] in ['server',
-#                                              'client'] and parts[-1] in ['sqlog', 'qlog']
 def is_valid_file(filename):
     """
     Check if the filename has a valid qlog format.
@@ -479,6 +563,8 @@ def is_valid_file(filename):
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    #TODO: Add a switch for enabling debug mode
+    # logging.basicConfig(filename='app.log', filemode='w', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
     try:
         main()
     except Exception as e:
