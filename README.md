@@ -1,4 +1,4 @@
-# quiclog
+# quiclog (qlog)
 
 ## Description
 
