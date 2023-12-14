@@ -1,4 +1,4 @@
-# quiclog (qlog)
+# pyqlog
 
 ## Description
 
