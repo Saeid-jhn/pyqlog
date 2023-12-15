@@ -1,7 +1,5 @@
 # pyqlog
 
-## Description
-
 This project provides tools for parsing QUIC protocol qlog files for the following QUIC implementations:
 
 - picoquic (`.qlog`)
