@@ -161,10 +161,10 @@ def process_quiche_json_object(json_object, packet_direction, packets_list, metr
                 else:
                     value = json_seq['data'][key]
 
-                    metric_dict = {'time': json_seq['time'] * 1000,
+                metric_dict = {'time': json_seq['time'] * 1000,
                                    'key': key,
                                    'value': value}
-                    metrics_list.append(metric_dict)
+                metrics_list.append(metric_dict)
     except json.JSONDecodeError:
         logging.warning(f"Skipping malformed JSON object: {json_object[:100]}...")
 
@@ -450,10 +450,9 @@ def process_data(df_datagram, df_offsets):
     """
     try:
         df_datagram_processed = calculate_throughput_goodput(df_datagram, 'throughput')
-        df_offsets_processed = calculate_throughput_goodput(df_offsets[df_offsets['duplicate'] == False], 'goodput')
-        # df_offsets[df_offsets['duplicate'] == False] = calculate_throughput_goodput(df_offsets, 'goodput')
+        df_offsets[df_offsets['duplicate'] == False] = calculate_throughput_goodput(df_offsets, 'goodput')
 
-        return df_datagram_processed, df_offsets_processed
+        return df_datagram_processed, df_offsets
 
     except Exception as e:
         logging.error(f"Error in processing data frames: {e}")
