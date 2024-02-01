@@ -304,7 +304,11 @@ def plot_figures(df_packets, df_metrics, df_offsets, df_datagram, qlog_file):
     #     'Times New Roman'] + plt.rcParams['font.serif']
     # This will change the default font size for all text
     plt.rcParams['font.size'] = 10
-    qlog_file_name, qlog_file_format = os.path.splitext(qlog_file)
+    qlog_file, _ = os.path.splitext(qlog_file)
+    
+    # Extract the base name without the extension
+    qlog_file_name = os.path.basename(qlog_file)
+    
     font_size = 10
     MB = 1000**2
     fig, ax = plt.subplots(5, 1, figsize=(4, 10), sharex=True)
