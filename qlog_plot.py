@@ -32,9 +32,11 @@ def extract_data(qlog_file):
     :return: A tuple of DataFrames (df_packets, df_metrics, df_offsets, df_datagram).
     """
     if qlog_file.endswith(QlogFormat.QLOG.value):
-        packets_list, metrics_list, offsets_list, datagram_list = parse_picoquic_log(qlog_file)
+        packets_list, metrics_list, offsets_list, datagram_list = parse_picoquic_log(
+            qlog_file)
     elif qlog_file.endswith(QlogFormat.SQLOG.value):
-        packets_list, metrics_list, offsets_list, datagram_list = parse_quiche_log(qlog_file)
+        packets_list, metrics_list, offsets_list, datagram_list = parse_quiche_log(
+            qlog_file)
     else:
         logging.error("The qlog file format is not supported!")
         return None, None, None, None
@@ -59,7 +61,8 @@ def create_dataframes(packets_list, metrics_list, offsets_list, datagram_list):
         df_datagram = pd.DataFrame(datagram_list)
 
         if 'packet_number' in df_packets.columns:
-            df_packets['duplicate'] = df_packets.duplicated(subset=['packet_number'])
+            df_packets['duplicate'] = df_packets.duplicated(
+                subset=['packet_number'])
             df_packets['packet_size_cumsum'] = df_packets.packet_size.cumsum()
 
         if 'offset' in df_offsets.columns:
@@ -103,7 +106,8 @@ def parse_quiche_log(qlog_file):
 
             # Process remaining JSON objects
             for json_object in json_objects:
-                json_object = json_object.strip()   # remove the line feed at the end of the json_text
+                # remove the line feed at the end of the json_text
+                json_object = json_object.strip()
                 if json_object:  # check the string is not empty
                     process_quiche_json_object(json_object, packet_direction, packets_list,
                                                metrics_list, offsets_list, datagram_list)
@@ -162,11 +166,12 @@ def process_quiche_json_object(json_object, packet_direction, packets_list, metr
                     value = json_seq['data'][key]
 
                 metric_dict = {'time': json_seq['time'] * 1000,
-                                   'key': key,
-                                   'value': value}
+                               'key': key,
+                               'value': value}
                 metrics_list.append(metric_dict)
     except json.JSONDecodeError:
-        logging.warning(f"Skipping malformed JSON object: {json_object[:100]}...")
+        logging.warning(
+            f"Skipping malformed JSON object: {json_object[:100]}...")
 
 
 def parse_picoquic_log(qlog_file):
@@ -189,7 +194,8 @@ def parse_picoquic_log(qlog_file):
             packet_direction = get_packet_direction(role)
 
             for event in events:
-                process_picoquic_event(event, packet_direction, packets_list, metrics_list, offsets_list, datagram_list)
+                process_picoquic_event(
+                    event, packet_direction, packets_list, metrics_list, offsets_list, datagram_list)
 
     except json.JSONDecodeError as e:
         logging.error(f"Error decoding JSON for file {qlog_file}: {e}")
@@ -254,8 +260,13 @@ def process_picoquic_event(event, packet_direction, packets_list, metrics_list, 
             metrics_list.append(metric_dict)
 
 
+# This function is intended to scale down a large timestamp like in quiche BBR.
+# Suitable for visualization and speed of throughput calculation.
 def get_time_window_size(last_time):
-    return last_time / 25
+    if last_time > 1e8:  # If the data transfer time is larger than 100 seconds
+        return last_time / 25
+    else:
+        return 1e6      # Else using 1 second time window.
 
 
 def calculate_throughput_goodput(df, metric):
@@ -278,7 +289,8 @@ def calculate_throughput_goodput(df, metric):
                 interval_sum = interval['length'].sum()
                 metric_val = interval_sum / time_window_size
                 metric_val = megabyte_per_sec_to_megabit_per_sec(metric_val)
-                df.loc[df["time"] == interval['time'].iloc[0], metric] = metric_val
+                df.loc[df["time"] == interval['time'].iloc[-1],
+                       metric] = metric_val
                 # updated the next interval:
                 interval_start = interval['time'].iloc[0] + 1
                 interval_end = interval_start + time_window_size
@@ -305,10 +317,10 @@ def plot_figures(df_packets, df_metrics, df_offsets, df_datagram, qlog_file):
     # This will change the default font size for all text
     plt.rcParams['font.size'] = 10
     qlog_file, _ = os.path.splitext(qlog_file)
-    
+
     # Extract the base name without the extension
     qlog_file_name = os.path.basename(qlog_file)
-    
+
     font_size = 10
     MB = 1000**2
     fig, ax = plt.subplots(5, 1, figsize=(4, 10), sharex=True)
@@ -405,7 +417,8 @@ def save_data_and_figures(
         df_datagram,
         fig,
         qlog_file):
-    qlog_file_withoutSuffix = qlog_file.removesuffix('.qlog').removesuffix('.sqlog')
+    qlog_file_withoutSuffix = qlog_file.removesuffix(
+        '.qlog').removesuffix('.sqlog')
     df_packets.to_csv(f"{qlog_file_withoutSuffix}_packets.csv", index=False)
     df_metrics.to_csv(f"{qlog_file_withoutSuffix}_metrics.csv", index=False)
     df_datagram.to_csv(f'{qlog_file_withoutSuffix}_datagram.csv', index=False)
@@ -426,7 +439,8 @@ def process_single_file(qlog_file):
     try:
         logging.info(f"Processing file: {qlog_file}")
         start_time = time.time()
-        df_packets, df_metrics, df_offsets, df_datagram = extract_data(qlog_file)
+        df_packets, df_metrics, df_offsets, df_datagram = extract_data(
+            qlog_file)
         df_datagram, df_offsets = process_data(df_datagram, df_offsets)
 
         fig = plot_figures(
@@ -435,7 +449,8 @@ def process_single_file(qlog_file):
             df_offsets,
             df_datagram,
             qlog_file)
-        save_data_and_figures(df_packets, df_metrics, df_offsets, df_datagram, fig, qlog_file)
+        save_data_and_figures(df_packets, df_metrics,
+                              df_offsets, df_datagram, fig, qlog_file)
 
         elapsed_time = time.time() - start_time
         return qlog_file, elapsed_time
@@ -453,8 +468,10 @@ def process_data(df_datagram, df_offsets):
     :return: Processed data frames.
     """
     try:
-        df_datagram_processed = calculate_throughput_goodput(df_datagram, 'throughput')
-        df_offsets[df_offsets['duplicate'] == False] = calculate_throughput_goodput(df_offsets, 'goodput')
+        df_datagram_processed = calculate_throughput_goodput(
+            df_datagram, 'throughput')
+        df_offsets[df_offsets['duplicate'] ==
+                   False] = calculate_throughput_goodput(df_offsets, 'goodput')
 
         return df_datagram_processed, df_offsets
 
@@ -476,14 +493,17 @@ def main():
         nargs='+',
         type=str,
         help='List of qlog files to process')
-    parser.add_argument('--debug', action='store_true', help='Enable debug mode')
+    parser.add_argument('--debug', action='store_true',
+                        help='Enable debug mode')
     args = parser.parse_args()
 
     # Configure logging based on the debug mode
     if args.debug:
-        logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+        logging.basicConfig(level=logging.DEBUG,
+                            format='%(asctime)s - %(levelname)s - %(message)s')
     else:
-        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+        logging.basicConfig(level=logging.INFO,
+                            format='%(asctime)s - %(levelname)s - %(message)s')
 
     logging.info("Expected file format: filename.[QUIC logging format]")
 
@@ -531,4 +551,5 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         logging.error(f"An error occurred: {e}")
-        logging.debug(traceback.format_exc())  # Logs the full stack trace at debug level
+        # Logs the full stack trace at debug level
+        logging.debug(traceback.format_exc())
