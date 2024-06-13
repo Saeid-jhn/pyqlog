@@ -260,16 +260,7 @@ def process_picoquic_event(event, packet_direction, packets_list, metrics_list, 
             metrics_list.append(metric_dict)
 
 
-# This function is intended to scale down a large timestamp like in quiche BBR.
-# Suitable for visualization and speed of throughput calculation.
-def get_time_window_size(last_time):
-    if last_time > 1e8:  # If the data transfer time is larger than 100 seconds
-        return last_time / 25
-    else:
-        return 1e6      # Else using 1 second time window.
-
-
-def calculate_throughput_goodput(df, metric):
+def calculate_throughput_goodput(df, metric, time_interval):
     try:
         if df.empty:
             raise ValueError("DataFrame is empty")
@@ -278,25 +269,24 @@ def calculate_throughput_goodput(df, metric):
             df = df[df['duplicate'] == False]
 
         last = df['time'].iloc[-1]
-        time_window_size = get_time_window_size(float(last))
 
         interval_start = df['time'].iloc[0]
-        interval_end = interval_start + time_window_size
+        interval_end = interval_start + time_interval
         while interval_end <= last:
             interval = df[(df['time'] >= interval_start)
                           & (df['time'] < interval_end)]
             if not interval.empty:
                 interval_sum = interval['length'].sum()
-                metric_val = interval_sum / time_window_size
+                metric_val = interval_sum / time_interval
                 metric_val = megabyte_per_sec_to_megabit_per_sec(metric_val)
                 df.loc[df["time"] == interval['time'].iloc[-1],
                        metric] = metric_val
                 # updated the next interval:
                 interval_start = interval['time'].iloc[0] + 1
-                interval_end = interval_start + time_window_size
+                interval_end = interval_start + time_interval
             else:
-                interval_start = interval_start + time_window_size
-                interval_end = interval_start + time_window_size
+                interval_start = interval_start + time_interval
+                interval_end = interval_start + time_interval
 
         return df
 
@@ -428,12 +418,13 @@ def save_data_and_figures(
     pass
 
 
-def process_single_file(qlog_file):
+def process_single_file(qlog_file, time_interval):
     """
     Process a single log file by extracting data, calculating metrics,
     plotting figures, and saving the results.
 
     :param qlog_file: Path and name of the log file to be processed.
+    :param interval: Time window interval in seconds.
     :return: Tuple containing the log file name and processing time or None in case of error.
     """
     try:
@@ -441,7 +432,8 @@ def process_single_file(qlog_file):
         start_time = time.time()
         df_packets, df_metrics, df_offsets, df_datagram = extract_data(
             qlog_file)
-        df_datagram, df_offsets = process_data(df_datagram, df_offsets)
+        df_datagram, df_offsets = process_data(
+            df_datagram, df_offsets, time_interval)
 
         fig = plot_figures(
             df_packets,
@@ -459,19 +451,20 @@ def process_single_file(qlog_file):
         return qlog_file, None
 
 
-def process_data(df_datagram, df_offsets):
+def process_data(df_datagram, df_offsets, time_interval):
     """
     Process the data frames to calculate throughput and goodput.
 
     :param df_datagram: Data frame containing datagram information.
     :param df_offsets: Data frame containing offsets information.
+    :param interval: Time window interval in microseconds.
     :return: Processed data frames.
     """
     try:
         df_datagram_processed = calculate_throughput_goodput(
-            df_datagram, 'throughput')
+            df_datagram, 'throughput', time_interval)
         df_offsets[df_offsets['duplicate'] ==
-                   False] = calculate_throughput_goodput(df_offsets, 'goodput')
+                   False] = calculate_throughput_goodput(df_offsets, 'goodput', time_interval)
 
         return df_datagram_processed, df_offsets
 
@@ -495,6 +488,8 @@ def main():
         help='List of qlog files to process')
     parser.add_argument('--debug', action='store_true',
                         help='Enable debug mode')
+    parser.add_argument('--interval', type=float, default=1000000.0,
+                        help='Time window interval in microsecond (default: 1000000.0)')
     args = parser.parse_args()
 
     # Configure logging based on the debug mode
@@ -509,16 +504,17 @@ def main():
 
     start_time_total = time.time()
 
-    process_files(args.file)
+    process_files(args.file, args.interval)
 
     logging.info(f"Total run time: {time.time() - start_time_total}")
 
 
-def process_files(qlog_files):
+def process_files(qlog_files, time_interval):
     """
     Process all valid qlog files in the specified directory.
 
     :param qlog_files: List of qlog files, not checked for validity yet.
+    :param interval: Time window interval in seconds.
     """
     valid_qlog_files = [f for f in qlog_files if is_valid_file(f)]
 
@@ -528,7 +524,8 @@ def process_files(qlog_files):
 
     logging.info(f"Processing following valid qlog files: {valid_qlog_files}")
     pool = multiprocessing.Pool(multiprocessing.cpu_count())
-    results = pool.map(process_single_file, valid_qlog_files)
+    results = pool.starmap(process_single_file, [
+                           (f, time_interval) for f in valid_qlog_files])
     logging.info(f"Processed {len(results)} files.")
 
 
