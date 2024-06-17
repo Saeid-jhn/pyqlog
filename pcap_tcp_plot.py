@@ -129,12 +129,17 @@ class PcapAnalyzer:
         self.logger.info(f"Plot saved to {save_path_png} and {save_path_pdf}")
         plt.close()
 
+        # Combine throughput and goodput into a single DataFrame
+        data_rate_df = pd.DataFrame({
+            'Time_Bin': self.throughput.index,
+            'Throughput (bps)': self.throughput.values,
+            'Goodput (bps)': self.goodput.values
+        })
+
         # Save throughput and goodput to CSV
         save_path_csv = os.path.join(os.path.dirname(
             self.pcap_file), f"{base_name}.data_rate.csv")
-        self.throughput.to_csv(save_path_csv, header=['Throughput (bps)'])
-        self.goodput.to_csv(save_path_csv, mode='a',
-                            header=['Goodput (bps)'])
+        data_rate_df.to_csv(save_path_csv, index=False)
         self.logger.info(f"Data rates saved to {save_path_csv}")
 
     def plot_time_sequence(self):
