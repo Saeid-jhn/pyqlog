@@ -129,6 +129,14 @@ class PcapAnalyzer:
         self.logger.info(f"Plot saved to {save_path_png} and {save_path_pdf}")
         plt.close()
 
+        # Save throughput and goodput to CSV
+        save_path_csv = os.path.join(os.path.dirname(
+            self.pcap_file), f"{base_name}.data_rate.csv")
+        self.throughput.to_csv(save_path_csv, header=['Throughput (bps)'])
+        self.goodput.to_csv(save_path_csv, mode='a',
+                            header=['Goodput (bps)'])
+        self.logger.info(f"Data rates saved to {save_path_csv}")
+
     def plot_time_sequence(self):
         if not self.plot_seq:
             return
@@ -154,15 +162,21 @@ class PcapAnalyzer:
         # Create the output file paths with .png and .pdf extensions
         base_name = os.path.basename(self.pcap_file)
         save_path_seq_png = os.path.join(os.path.dirname(
-            self.pcap_file), f"{base_name}_seq.png")
+            self.pcap_file), f"{base_name}.seq.png")
         save_path_seq_pdf = os.path.join(os.path.dirname(
-            self.pcap_file), f"{base_name}_seq.pdf")
+            self.pcap_file), f"{base_name}.seq.pdf")
 
         plt.savefig(save_path_seq_png)
         plt.savefig(save_path_seq_pdf)
         self.logger.info(
             f"Time/sequence plot saved to {save_path_seq_png} and {save_path_seq_pdf}")
         plt.close()
+
+        # Save sequence data to CSV
+        save_path_seq_csv = os.path.join(os.path.dirname(
+            self.pcap_file), f"{base_name}.seq.csv")
+        seq_df.to_csv(save_path_seq_csv, index=False)
+        self.logger.info(f"Sequence data saved to {save_path_seq_csv}")
 
     def run_analysis(self):
         self.read_pcap()
