@@ -143,9 +143,7 @@ def process_quiche_json_object(json_object, packet_direction, packets_list, metr
                 if frame['frame_type'] == 'stream':
                     offset_dict = {'time': json_seq['time'] * 1000,
                                    'offset': frame['offset'],
-                                   'length': frame['length'],
-                                   'goodput': None,
-                                   'goodput_no_gaps': None}
+                                   'length': frame['length']}
                     offsets_list.append(offset_dict)
 
             datagram_dict = {'time': json_seq['time'] * 1000,
@@ -242,9 +240,7 @@ def process_picoquic_event(event, packet_direction, packets_list, metrics_list, 
             if frame['frame_type'] == 'stream':
                 offset_dict = {'time': event[0],
                                'offset': frame['offset'],
-                               'length': frame['length'],
-                               'goodput': None,
-                               'goodput_no_gaps': None}
+                               'length': frame['length']}
                 offsets_list.append(offset_dict)
 
         datagram_dict = {'time': event[0],
@@ -260,46 +256,60 @@ def process_picoquic_event(event, packet_direction, packets_list, metrics_list, 
             metrics_list.append(metric_dict)
 
 
-def calculate_throughput_goodput(df, metric, time_interval):
+def calculate_throughput_and_goodput(df_datagram, df_offsets, time_interval):
+    data_rate_list = []
+
     try:
-        if df.empty:
-            raise ValueError("DataFrame is empty")
+        if df_datagram.empty and df_offsets.empty:
+            raise ValueError("DataFrames are empty")
 
-        if metric == 'goodput':
-            df = df[df['duplicate'] == False]
+        last_time = max(df_datagram['time'].max(), df_offsets['time'].max())
 
-        last = df['time'].iloc[-1]
+        interval_start = 0
+        interval_end = time_interval
 
-        interval_start = df['time'].iloc[0]
-        interval_end = interval_start + time_interval
-        while interval_end <= last:
-            interval = df[(df['time'] >= interval_start)
-                          & (df['time'] < interval_end)]
-            if not interval.empty:
-                interval_sum = interval['length'].sum()
-                metric_val = interval_sum / time_interval
-                metric_val = megabyte_per_sec_to_megabit_per_sec(metric_val)
-                df.loc[df["time"] == interval['time'].iloc[-1],
-                       metric] = metric_val
-                # updated the next interval:
-                interval_start = interval['time'].iloc[0] + 1
-                interval_end = interval_start + time_interval
-            else:
-                interval_start = interval_start + time_interval
-                interval_end = interval_start + time_interval
+        while interval_start <= last_time:
+            interval_datagram = df_datagram[(df_datagram['time'] >= interval_start) & (
+                df_datagram['time'] < interval_end)]
+            interval_offsets = df_offsets[(df_offsets['time'] >= interval_start) & (
+                df_offsets['time'] < interval_end) & (df_offsets['duplicate'] == False)]
 
-        return df
+            throughput_val = 0
+            goodput_val = 0
+
+            if not interval_datagram.empty:
+                interval_sum = interval_datagram['length'].sum()
+                throughput_val = megabyte_per_sec_to_megabit_per_sec(
+                    interval_sum / time_interval)
+
+            if not interval_offsets.empty:
+                interval_sum = interval_offsets['length'].sum()
+                goodput_val = megabyte_per_sec_to_megabit_per_sec(
+                    interval_sum / time_interval)
+
+            data_rate_list.append({
+                'start_interval': interval_start,
+                'end_interval': interval_end,
+                'throughput': throughput_val,
+                'goodput': goodput_val
+            })
+
+            interval_start = interval_end
+            interval_end += time_interval
+
+        data_rate_df = pd.DataFrame(data_rate_list)
+        return df_datagram, df_offsets, data_rate_df
 
     except Exception as e:
-        logging.error(f"Error in calculate_throughput_goodput: {e}")
-        return pd.DataFrame()
+        logging.error(f"Error in calculate_throughput_and_goodput: {e}")
+        return df_datagram, df_offsets, pd.DataFrame()
 
 
 def megabyte_per_sec_to_megabit_per_sec(mb_per_sec):
     return mb_per_sec * 8
 
 
-def plot_figures(df_packets, df_metrics, df_offsets, df_datagram, qlog_file):
+def plot_figures(df_packets, df_metrics, df_offsets, data_rate_df, qlog_file):
     sns.set()
     # plt.rcParams['font.family'] = 'serif'
     # plt.rcParams['font.serif'] = [
@@ -380,14 +390,13 @@ def plot_figures(df_packets, df_metrics, df_offsets, df_datagram, qlog_file):
         markerscale=10, fontsize=font_size)
     ax[3].set_ylabel("RTT [ms]", fontsize=font_size)
 
-    # throughput/goodput
-    line_4_throughput, = ax[4].plot(df_datagram['time'] / 1e6,
-                                    df_datagram['throughput'],
-                                    'o-', markersize=1, label="throughput")
-    line_4_goodput, = ax[4].plot(df_offsets[df_offsets['duplicate'] == False]['time'] / 1e6,
-                                 df_offsets[df_offsets['duplicate']
-                                            == False]['goodput'],
-                                 '-.', markersize=1, label="goodput")
+    # throughput and goodput
+    line_4_throughput, = ax[4].plot(data_rate_df['start_interval'] / 1e6,
+                                    data_rate_df['throughput'],
+                                    '-', markersize=1, label="throughput")
+    line_4_goodput, = ax[4].plot(data_rate_df['start_interval'] / 1e6,
+                                 data_rate_df['goodput'],
+                                 '--', markersize=1, label="goodput")
     ax[4].legend(handles=[line_4_throughput, line_4_goodput],
                  markerscale=10, fontsize=font_size)
     ax[4].set_ylabel("data rate [Mbps]", fontsize=font_size)
@@ -405,6 +414,7 @@ def save_data_and_figures(
         df_metrics,
         df_offsets,
         df_datagram,
+        data_rate_df,
         fig,
         qlog_file):
     qlog_file_withoutSuffix = qlog_file.removesuffix(
@@ -413,6 +423,8 @@ def save_data_and_figures(
     df_metrics.to_csv(f"{qlog_file_withoutSuffix}_metrics.csv", index=False)
     df_datagram.to_csv(f'{qlog_file_withoutSuffix}_datagram.csv', index=False)
     df_offsets.to_csv(f'{qlog_file_withoutSuffix}_offsets.csv', index=False)
+    data_rate_df.to_csv(
+        f'{qlog_file_withoutSuffix}_data_rate.csv', index=False)
     plt.savefig(f"{qlog_file_withoutSuffix}.pdf")
     plt.savefig(f"{qlog_file_withoutSuffix}.png", dpi=600)
     pass
@@ -432,46 +444,19 @@ def process_single_file(qlog_file, time_interval):
         start_time = time.time()
         df_packets, df_metrics, df_offsets, df_datagram = extract_data(
             qlog_file)
-        df_datagram, df_offsets = process_data(
+        df_datagram, df_offsets, data_rate_df = calculate_throughput_and_goodput(
             df_datagram, df_offsets, time_interval)
 
-        fig = plot_figures(
-            df_packets,
-            df_metrics,
-            df_offsets,
-            df_datagram,
-            qlog_file)
-        save_data_and_figures(df_packets, df_metrics,
-                              df_offsets, df_datagram, fig, qlog_file)
+        fig = plot_figures(df_packets, df_metrics,
+                           df_offsets, data_rate_df, qlog_file)
+        save_data_and_figures(df_packets, df_metrics, df_offsets,
+                              df_datagram, data_rate_df, fig, qlog_file)
 
         elapsed_time = time.time() - start_time
         return qlog_file, elapsed_time
     except (json.JSONDecodeError, FileNotFoundError, IOError) as e:
         logging.error(f"Error processing {qlog_file}: {e}")
         return qlog_file, None
-
-
-def process_data(df_datagram, df_offsets, time_interval):
-    """
-    Process the data frames to calculate throughput and goodput.
-
-    :param df_datagram: Data frame containing datagram information.
-    :param df_offsets: Data frame containing offsets information.
-    :param interval: Time window interval in microseconds.
-    :return: Processed data frames.
-    """
-    try:
-        df_datagram_processed = calculate_throughput_goodput(
-            df_datagram, 'throughput', time_interval)
-        df_offsets[df_offsets['duplicate'] ==
-                   False] = calculate_throughput_goodput(df_offsets, 'goodput', time_interval)
-
-        return df_datagram_processed, df_offsets
-
-    except Exception as e:
-        logging.error(f"Error in processing data frames: {e}")
-        # Return original data frames in case of error
-        return df_datagram, df_offsets
 
 
 def main():
