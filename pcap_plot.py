@@ -118,6 +118,10 @@ class Plotter:
         self.base_name = f"{base_name}.pcap"
 
     def plot_throughput(self, throughput: pd.DataFrame) -> None:
+        if throughput.empty:
+            logging.info("No throughput data available to plot.")
+            return
+
         logging.info("Plotting throughput.")
         try:
             plt.figure(figsize=(12, 6))
@@ -145,6 +149,10 @@ class Plotter:
             logging.error(f"Error plotting throughput. Exception: {e}")
 
     def plot_time_sequence(self, tcp_seq_data: List[Tuple[float, int, str, str, int, int]]) -> None:
+        if not tcp_seq_data:
+            logging.info("No TCP sequence data available to plot.")
+            return
+
         logging.info("Plotting TCP sequence numbers over time.")
         try:
             seq_df = pd.DataFrame(tcp_seq_data, columns=[
@@ -220,6 +228,10 @@ class PcapAnalyzer:
 def analyze_pcap_file(pcap_file: str, interval: float, plot_seq: bool, filter_src_ip: Optional[str],
                       filter_src_port: Optional[int], filter_dst_ip: Optional[str], filter_dst_port: Optional[int],
                       stream_index: Optional[int] = None) -> None:
+    if not os.path.exists(pcap_file):
+        logging.error(f"Pcap file does not exist: {pcap_file}")
+        return
+
     analyzer = PcapAnalyzer(pcap_file=pcap_file, interval=interval, plot_seq=plot_seq,
                             filter_src_ip=filter_src_ip, filter_src_port=filter_src_port,
                             filter_dst_ip=filter_dst_ip, filter_dst_port=filter_dst_port, stream_index=stream_index)
