@@ -26,71 +26,83 @@ class PcapFileProcessor:
 
     def read_pcap(self) -> Tuple[List[Tuple[float, int]], List[Tuple[float, int, str, str, int, int]]]:
         logging.info(f"Starting to read pcap file: {self.pcap_file}")
-        capture = pyshark.FileCapture(self.pcap_file)
-        start_time = None
+        try:
+            capture = pyshark.FileCapture(self.pcap_file)
+            start_time = None
 
-        for packet in capture:
-            try:
-                timestamp = float(packet.sniff_timestamp)
-                length = int(packet.length)
+            for packet in capture:
+                try:
+                    timestamp = float(packet.sniff_timestamp)
+                    length = int(packet.length)
 
-                if start_time is None:
-                    start_time = timestamp
+                    if start_time is None:
+                        start_time = timestamp
 
-                relative_timestamp = timestamp - start_time
-                self.packets.append((relative_timestamp, length))
+                    relative_timestamp = timestamp - start_time
+                    self.packets.append((relative_timestamp, length))
 
-                if self.plot_seq and 'TCP' in packet:
-                    self.process_tcp_packet(packet, relative_timestamp)
-            except AttributeError:
-                pass
+                    if self.plot_seq and 'TCP' in packet:
+                        self.process_tcp_packet(packet, relative_timestamp)
+                except AttributeError:
+                    pass
 
-        capture.close()
-        logging.info(
-            f"Finished reading pcap file: {self.pcap_file}. Total packets read: {len(self.packets)}")
+            capture.close()
+            logging.info(
+                f"Finished reading pcap file: {self.pcap_file}. Total packets read: {len(self.packets)}")
+        except Exception as e:
+            logging.error(
+                f"Error reading pcap file: {self.pcap_file}. Exception: {e}")
         return self.packets, self.tcp_seq_data
 
     def process_tcp_packet(self, packet: pyshark.packet.packet.Packet, relative_timestamp: float) -> None:
-        src_ip = packet.ip.src
-        dst_ip = packet.ip.dst
-        src_port = int(packet.tcp.srcport)
-        dst_port = int(packet.tcp.dstport)
+        try:
+            src_ip = packet.ip.src
+            dst_ip = packet.ip.dst
+            src_port = int(packet.tcp.srcport)
+            dst_port = int(packet.tcp.dstport)
 
-        if (self.filter_src_ip and self.filter_dst_ip and self.filter_src_port and self.filter_dst_port):
-            if (src_ip == self.filter_src_ip and dst_ip == self.filter_dst_ip and
-                    src_port == self.filter_src_port and dst_port == self.filter_dst_port):
+            if (self.filter_src_ip and self.filter_dst_ip and self.filter_src_port and self.filter_dst_port):
+                if (src_ip == self.filter_src_ip and dst_ip == self.filter_dst_ip and
+                        src_port == self.filter_src_port and dst_port == self.filter_dst_port):
+                    seq_num = int(packet.tcp.seq)
+                    self.tcp_seq_data.append(
+                        (relative_timestamp, seq_num, src_ip, dst_ip, src_port, dst_port))
+            else:
                 seq_num = int(packet.tcp.seq)
                 self.tcp_seq_data.append(
                     (relative_timestamp, seq_num, src_ip, dst_ip, src_port, dst_port))
-        else:
-            seq_num = int(packet.tcp.seq)
-            self.tcp_seq_data.append(
-                (relative_timestamp, seq_num, src_ip, dst_ip, src_port, dst_port))
+        except Exception as e:
+            logging.error(f"Error processing TCP packet. Exception: {e}")
 
 
 class ThroughputCalculator:
     def __init__(self, interval: float):
-        self.interval = interval / 1e6  # Convert microseconds to seconds
+        self.interval = interval
 
     def calculate(self, packets: List[Tuple[float, int]]) -> pd.DataFrame:
         logging.info("Calculating throughput.")
-        df = pd.DataFrame(packets, columns=['Timestamp', 'Length'])
-        df['Time_Bin'] = (df['Timestamp'] // self.interval) * self.interval
+        try:
+            df = pd.DataFrame(packets, columns=['Timestamp', 'Length'])
+            df['Time_Bin'] = (df['Timestamp'] // self.interval) * self.interval
 
-        min_time_bin = df['Time_Bin'].min()
-        max_time_bin = df['Time_Bin'].max()
-        complete_time_bins = pd.Series(
-            np.arange(min_time_bin, max_time_bin + self.interval, self.interval))
+            min_time_bin = df['Time_Bin'].min()
+            max_time_bin = df['Time_Bin'].max()
+            complete_time_bins = pd.Series(
+                np.arange(min_time_bin, max_time_bin + self.interval, self.interval))
 
-        throughput = df.groupby('Time_Bin')['Length'].sum().reindex(
-            complete_time_bins, fill_value=0) * 8 / self.interval
-        throughput_df = throughput.reset_index()
-        throughput_df['end_interval'] = throughput_df['index'] + self.interval
-        throughput_df.columns = [
-            'start_interval', 'throughput', 'end_interval']
+            throughput = df.groupby('Time_Bin')['Length'].sum().reindex(
+                complete_time_bins, fill_value=0) * 8 / self.interval
+            throughput_df = throughput.reset_index()
+            throughput_df['end_interval'] = throughput_df['index'] + \
+                self.interval
+            throughput_df.columns = [
+                'start_interval', 'throughput', 'end_interval']
 
-        logging.info("Throughput calculation completed.")
-        return throughput_df[['start_interval', 'end_interval', 'throughput']]
+            logging.info("Throughput calculation completed.")
+            return throughput_df[['start_interval', 'end_interval', 'throughput']]
+        except Exception as e:
+            logging.error(f"Error calculating throughput. Exception: {e}")
+            return pd.DataFrame(columns=['start_interval', 'end_interval', 'throughput'])
 
 
 class Plotter:
@@ -99,53 +111,60 @@ class Plotter:
 
     def plot_throughput(self, throughput: pd.DataFrame) -> None:
         logging.info("Plotting throughput.")
-        plt.figure(figsize=(12, 6))
-        plt.plot(throughput['start_interval'],
-                 throughput['throughput'], label='Throughput', linestyle='-')
+        try:
+            plt.figure(figsize=(12, 6))
+            plt.plot(throughput['start_interval'],
+                     throughput['throughput'], label='Throughput', linestyle='-')
 
-        plt.title('Throughput')
-        plt.xlabel('Time (s)')
-        plt.ylabel('Data rate (Mbps)')
-        plt.legend()
-        plt.grid(True)
+            plt.title('Throughput')
+            plt.xlabel('Time (s)')
+            plt.ylabel('Data rate (Mbps)')
+            plt.legend()
+            plt.grid(True)
 
-        plt.gca().yaxis.set_major_formatter(
-            FuncFormatter(lambda x, pos: f'{x * 1e-6:.1f} Mbps'))
+            plt.gca().yaxis.set_major_formatter(
+                FuncFormatter(lambda x, pos: f'{x * 1e-6:.1f} Mbps'))
 
-        save_path_png = f"{self.base_name}.data_rate.png"
-        save_path_pdf = f"{self.base_name}.data_rate.pdf"
+            save_path_png = f"{self.base_name}.data_rate.png"
+            save_path_pdf = f"{self.base_name}.data_rate.pdf"
 
-        plt.savefig(save_path_png)
-        plt.savefig(save_path_pdf)
-        plt.close()
-        logging.info(
-            f"Throughput plot saved to {save_path_png} and {save_path_pdf}")
+            plt.savefig(save_path_png)
+            plt.savefig(save_path_pdf)
+            plt.close()
+            logging.info(
+                f"Throughput plot saved to {save_path_png} and {save_path_pdf}")
+        except Exception as e:
+            logging.error(f"Error plotting throughput. Exception: {e}")
 
     def plot_time_sequence(self, tcp_seq_data: List[Tuple[float, int, str, str, int, int]]) -> None:
         logging.info("Plotting TCP sequence numbers over time.")
-        seq_df = pd.DataFrame(tcp_seq_data, columns=[
-                              'Timestamp', 'SequenceNumber', 'SrcIP', 'DstIP', 'SrcPort', 'DstPort'])
+        try:
+            seq_df = pd.DataFrame(tcp_seq_data, columns=[
+                                  'Timestamp', 'SequenceNumber', 'SrcIP', 'DstIP', 'SrcPort', 'DstPort'])
 
-        plt.figure(figsize=(12, 6))
+            plt.figure(figsize=(12, 6))
 
-        for (src_ip, dst_ip, src_port, dst_port), group in seq_df.groupby(['SrcIP', 'DstIP', 'SrcPort', 'DstPort']):
-            plt.scatter(group['Timestamp'], group['SequenceNumber'],
-                        label=f"{src_ip}:{src_port} -> {dst_ip}:{dst_port}", s=5)
+            for (src_ip, dst_ip, src_port, dst_port), group in seq_df.groupby(['SrcIP', 'DstIP', 'SrcPort', 'DstPort']):
+                plt.scatter(group['Timestamp'], group['SequenceNumber'],
+                            label=f"{src_ip}:{src_port} -> {dst_ip}:{dst_port}", s=5)
 
-        plt.title('TCP Sequence Number Over Time')
-        plt.xlabel('Time (s)')
-        plt.ylabel('Sequence Number')
-        plt.legend()
-        plt.grid(True)
+            plt.title('TCP Sequence Number Over Time')
+            plt.xlabel('Time (s)')
+            plt.ylabel('Sequence Number')
+            plt.legend()
+            plt.grid(True)
 
-        save_path_seq_png = f"{self.base_name}.seq.png"
-        save_path_seq_pdf = f"{self.base_name}.seq.pdf"
+            save_path_seq_png = f"{self.base_name}.seq.png"
+            save_path_seq_pdf = f"{self.base_name}.seq.pdf"
 
-        plt.savefig(save_path_seq_png)
-        plt.savefig(save_path_seq_pdf)
-        plt.close()
-        logging.info(
-            f"Sequence plot saved to {save_path_seq_png} and {save_path_seq_pdf}")
+            plt.savefig(save_path_seq_png)
+            plt.savefig(save_path_seq_pdf)
+            plt.close()
+            logging.info(
+                f"Sequence plot saved to {save_path_seq_png} and {save_path_seq_pdf}")
+        except Exception as e:
+            logging.error(
+                f"Error plotting TCP sequence numbers. Exception: {e}")
 
 
 class PcapAnalyzer:
@@ -166,6 +185,7 @@ class PcapAnalyzer:
 
     def run_analysis(self) -> None:
         start_time = time.time()
+        self.logger.info(f"Starting analysis for file: {self.pcap_file}")
 
         packets, tcp_seq_data = self.processor.read_pcap()
         throughput = self.calculator.calculate(packets)
@@ -173,7 +193,7 @@ class PcapAnalyzer:
         self.plotter.plot_throughput(throughput)
         throughput.to_csv(
             f"{self.plotter.base_name}.data_rate.csv", index=False)
-        logging.info(
+        self.logger.info(
             f"Throughput data saved to {self.plotter.base_name}.data_rate.csv")
 
         if tcp_seq_data:
@@ -181,7 +201,7 @@ class PcapAnalyzer:
             seq_df = pd.DataFrame(tcp_seq_data, columns=[
                                   'Timestamp', 'SequenceNumber', 'SrcIP', 'DstIP', 'SrcPort', 'DstPort'])
             seq_df.to_csv(f"{self.plotter.base_name}.seq.csv", index=False)
-            logging.info(
+            self.logger.info(
                 f"Sequence data saved to {self.plotter.base_name}.seq.csv")
 
         end_time = time.time()
@@ -201,8 +221,8 @@ def main() -> None:
         description="Analyze and plot throughput from pcap files.")
     parser.add_argument("pcap_files", type=str, nargs='+',
                         help="Paths to the pcap files")
-    parser.add_argument("--interval", type=float, default=1000000.0,
-                        help="Time interval in microseconds for calculating throughput")
+    parser.add_argument("--interval", type=float, default=1.0,
+                        help="Time interval in seconds for calculating throughput")
     parser.add_argument("--plot-seq", action="store_true",
                         help="Plot TCP sequence number over time")
     parser.add_argument("--filter-src-ip", type=str,
