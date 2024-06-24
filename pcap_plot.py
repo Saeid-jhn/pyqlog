@@ -26,6 +26,7 @@ class PcapFileProcessor:
 
     def read_pcap(self) -> Tuple[List[Tuple[float, int]], List[Tuple[float, int, str, str, int, int]]]:
         logging.info(f"Starting to read pcap file: {self.pcap_file}")
+        start_time_read = time.time()
         try:
             capture = pyshark.FileCapture(self.pcap_file)
             start_time = None
@@ -47,8 +48,9 @@ class PcapFileProcessor:
                     pass
 
             capture.close()
+            end_time_read = time.time()
             logging.info(
-                f"Finished reading pcap file: {self.pcap_file}. Total packets read: {len(self.packets)}")
+                f"Finished reading pcap file: {self.pcap_file}. Total packets read: {len(self.packets)} in {end_time_read - start_time_read:.2f} seconds")
         except Exception as e:
             logging.error(
                 f"Error reading pcap file: {self.pcap_file}. Exception: {e}")
