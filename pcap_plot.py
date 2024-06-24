@@ -224,7 +224,7 @@ def main() -> None:
     parser.add_argument("--interval", type=float, default=1.0,
                         help="Time interval in seconds for calculating throughput")
     parser.add_argument("--plot-seq", action="store_true",
-                        help="Plot TCP sequence number over time")
+                        help="Plot TCP sequence number over time (only for TCP)")
     parser.add_argument("--filter-src-ip", type=str,
                         help="Source IP address to filter")
     parser.add_argument("--filter-src-port", type=int,
