@@ -14,13 +14,14 @@ from matplotlib.ticker import FuncFormatter
 class PcapFileProcessor:
     def __init__(self, pcap_file: str, plot_seq: bool = False, filter_src_ip: Optional[str] = None,
                  filter_src_port: Optional[int] = None, filter_dst_ip: Optional[str] = None,
-                 filter_dst_port: Optional[int] = None):
+                 filter_dst_port: Optional[int] = None, stream_index: Optional[int] = None):
         self.pcap_file = pcap_file
         self.plot_seq = plot_seq
         self.filter_src_ip = filter_src_ip
         self.filter_src_port = filter_src_port
         self.filter_dst_ip = filter_dst_ip
         self.filter_dst_port = filter_dst_port
+        self.stream_index = stream_index
         self.packets: List[Tuple[float, int]] = []
         self.tcp_seq_data: List[Tuple[float, int, str, str, int, int]] = []
 
@@ -28,7 +29,12 @@ class PcapFileProcessor:
         logging.info(f"Starting to read pcap file: {self.pcap_file}")
         start_time_read = time.time()
         try:
-            capture = pyshark.FileCapture(self.pcap_file)
+            if self.stream_index is not None:
+                capture = pyshark.FileCapture(
+                    self.pcap_file, display_filter=f"tcp.stream eq {self.stream_index}")
+            else:
+                capture = pyshark.FileCapture(self.pcap_file)
+
             start_time = None
 
             for packet in capture:
@@ -171,10 +177,11 @@ class Plotter:
 
 class PcapAnalyzer:
     def __init__(self, pcap_file: str, interval: float, plot_seq: bool, filter_src_ip: Optional[str],
-                 filter_src_port: Optional[int], filter_dst_ip: Optional[str], filter_dst_port: Optional[int]):
+                 filter_src_port: Optional[int], filter_dst_ip: Optional[str], filter_dst_port: Optional[int],
+                 stream_index: Optional[int] = None):
         self.pcap_file = pcap_file
         self.processor = PcapFileProcessor(
-            pcap_file, plot_seq, filter_src_ip, filter_src_port, filter_dst_ip, filter_dst_port)
+            pcap_file, plot_seq, filter_src_ip, filter_src_port, filter_dst_ip, filter_dst_port, stream_index)
         self.calculator = ThroughputCalculator(interval)
         self.plotter = Plotter(os.path.splitext(pcap_file)[0])
         self.logger = logging.getLogger(__name__)
@@ -211,10 +218,11 @@ class PcapAnalyzer:
 
 
 def analyze_pcap_file(pcap_file: str, interval: float, plot_seq: bool, filter_src_ip: Optional[str],
-                      filter_src_port: Optional[int], filter_dst_ip: Optional[str], filter_dst_port: Optional[int]) -> None:
+                      filter_src_port: Optional[int], filter_dst_ip: Optional[str], filter_dst_port: Optional[int],
+                      stream_index: Optional[int] = None) -> None:
     analyzer = PcapAnalyzer(pcap_file=pcap_file, interval=interval, plot_seq=plot_seq,
                             filter_src_ip=filter_src_ip, filter_src_port=filter_src_port,
-                            filter_dst_ip=filter_dst_ip, filter_dst_port=filter_dst_port)
+                            filter_dst_ip=filter_dst_ip, filter_dst_port=filter_dst_port, stream_index=stream_index)
     analyzer.run_analysis()
 
 
@@ -235,11 +243,13 @@ def main() -> None:
                         help="Destination IP address to filter")
     parser.add_argument("--filter-dst-port", type=int,
                         help="Destination port to filter")
+    parser.add_argument("--stream-index", type=int,
+                        help="Filter for a specific TCP stream index")
     args = parser.parse_args()
 
     with Pool(cpu_count()) as pool:
         pool.starmap(analyze_pcap_file, [(pcap_file, args.interval, args.plot_seq, args.filter_src_ip,
-                                          args.filter_src_port, args.filter_dst_ip, args.filter_dst_port) for pcap_file in args.pcap_files])
+                                          args.filter_src_port, args.filter_dst_ip, args.filter_dst_port, args.stream_index) for pcap_file in args.pcap_files])
 
 
 if __name__ == "__main__":
