@@ -216,8 +216,10 @@ class QlogDataProcessor:
         try:
             last_time = max(
                 self.df_datagram['time'].max(), self.df_offsets['time'].max())
+            last_interval_end = (
+                last_time // self.time_interval + 1) * self.time_interval
             intervals = pd.interval_range(
-                start=0, end=last_time, freq=self.time_interval, closed='left')
+                start=0, end=last_interval_end, freq=self.time_interval, closed='left')
 
             # Throughput calculation
             self.df_datagram['interval'] = pd.cut(
@@ -225,7 +227,7 @@ class QlogDataProcessor:
             df_throughput = self.df_datagram.groupby('interval').agg(
                 {'length': 'sum'}).rename(columns={'length': 'throughput'})
             df_throughput['throughput'] = df_throughput['throughput'].fillna(0).div(
-                self.time_interval).apply(self.megabyte_per_sec_to_megabit_per_sec)
+                self.time_interval).apply(self.megabyte_per_sec_to_bits_per_sec)
 
             # Goodput calculation
             self.df_offsets['interval'] = pd.cut(
@@ -233,28 +235,26 @@ class QlogDataProcessor:
             df_goodput = self.df_offsets[self.df_offsets['duplicate'] == False].groupby(
                 'interval').agg({'length': 'sum'}).rename(columns={'length': 'goodput'})
             df_goodput['goodput'] = df_goodput['goodput'].fillna(0).div(
-                self.time_interval).apply(self.megabyte_per_sec_to_megabit_per_sec)
+                self.time_interval).apply(self.megabyte_per_sec_to_bits_per_sec)
 
             self.data_rate_df = pd.concat(
                 [df_throughput, df_goodput], axis=1).reset_index()
             self.data_rate_df['start_interval'] = self.data_rate_df['interval'].apply(
-                lambda x: x.left)
+                lambda x: x.left / 1e6)  # Convert to seconds
             self.data_rate_df['end_interval'] = self.data_rate_df['interval'].apply(
-                lambda x: x.right)
+                lambda x: x.right / 1e6)   # Convert to seconds
             self.data_rate_df.drop(columns=['interval'], inplace=True)
 
-            # Convert start_interval and end_interval to numeric values
-            self.data_rate_df['start_interval'] = self.data_rate_df['start_interval'].astype(
-                float)
-            self.data_rate_df['end_interval'] = self.data_rate_df['end_interval'].astype(
-                float)
+            # Reorder columns
+            self.data_rate_df = self.data_rate_df[[
+                'start_interval', 'end_interval', 'throughput', 'goodput']]
 
         except Exception as e:
             logging.error(f"Error in calculate_throughput_and_goodput: {e}")
 
     @staticmethod
-    def megabyte_per_sec_to_megabit_per_sec(mb_per_sec: float) -> float:
-        return mb_per_sec * 8
+    def megabyte_per_sec_to_bits_per_sec(mb_per_sec: float) -> float:
+        return mb_per_sec * 8 * 1e6  # Convert MB/s to bits per second
 
 
 class QlogPlotter:
@@ -288,7 +288,8 @@ class QlogPlotter:
                                                 ]['offset'] / MB,
                                 '.', markersize=1, label="offset retransmitted")
         line_0_pkt, = ax[0].plot(self.df_packets['time'] / 1e6,
-                                 self.df_packets['packet_size_cumsum'] / MB,
+                                 self.df_packets['packet_size_cumsum'] /
+                                 MB,
                                  '.', markersize=1, label="cumulative data size")
         ax[0].legend(handles=[line_0_off, line_0_re, line_0_pkt],
                      markerscale=10, fontsize=font_size)
@@ -335,11 +336,13 @@ class QlogPlotter:
                      markerscale=10, fontsize=font_size)
         ax[3].set_ylabel("RTT [ms]", fontsize=font_size)
 
-        line_4_throughput, = ax[4].plot(self.data_rate_df['start_interval'] / 1e6,
-                                        self.data_rate_df['throughput'],
+        line_4_throughput, = ax[4].plot(self.data_rate_df['start_interval'],
+                                        # Convert bits to megabits
+                                        self.data_rate_df['throughput'] / MB,
                                         '-', markersize=1, label="throughput")
-        line_4_goodput, = ax[4].plot(self.data_rate_df['start_interval'] / 1e6,
-                                     self.data_rate_df['goodput'],
+        line_4_goodput, = ax[4].plot(self.data_rate_df['start_interval'],
+                                     # Convert bits to megabits
+                                     self.data_rate_df['goodput'] / MB,
                                      '--', markersize=1, label="goodput")
         ax[4].legend(handles=[line_4_throughput, line_4_goodput],
                      markerscale=10, fontsize=font_size)
@@ -353,9 +356,8 @@ class QlogPlotter:
         return fig
 
     def save_figures(self, fig):
-        qlog_file_without_suffix = os.path.splitext(self.qlog_file)[0]
-        plt.savefig(f"{qlog_file_without_suffix}.pdf")
-        plt.savefig(f"{qlog_file_without_suffix}.png", dpi=600)
+        plt.savefig(f"{self.qlog_file}.pdf")
+        plt.savefig(f"{self.qlog_file}.png", dpi=600)
 
 
 class QlogProcessor:
@@ -401,17 +403,18 @@ class QlogProcessor:
             raise ValueError(f"Unsupported qlog file format: {self.qlog_file}")
 
     def save_data(self):
-        qlog_file_without_suffix = os.path.splitext(self.qlog_file)[0]
         self.df_packets.to_csv(
-            f"{qlog_file_without_suffix}_packets.csv", index=False)
+            f"{self.qlog_file}.packets.csv", index=False)
         self.df_metrics.to_csv(
-            f"{qlog_file_without_suffix}_metrics.csv", index=False)
+            f"{self.qlog_file}.metrics.csv", index=False)
         self.df_datagram.to_csv(
-            f'{qlog_file_without_suffix}_datagram.csv', index=False)
+            f'{self.qlog_file}.datagram.csv', index=False)
         self.df_offsets.to_csv(
-            f'{qlog_file_without_suffix}_offsets.csv', index=False)
+            f'{self.qlog_file}.offsets.csv', index=False)
+        self.data_rate_df.columns = [
+            'start_interval (s)', 'end_interval (s)', 'throughput (bps)', 'goodput (bps)']
         self.data_rate_df.to_csv(
-            f'{qlog_file_without_suffix}_data_rate.csv', index=False)
+            f'{self.qlog_file}.data_rate.csv', index=False)
 
 
 def process_files(qlog_files: List[str], time_interval: float):
