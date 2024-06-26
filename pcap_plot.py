@@ -104,13 +104,13 @@ class ThroughputCalculator:
             throughput_df['end_interval'] = throughput_df['index'] + \
                 self.interval
             throughput_df.columns = [
-                'start_interval', 'throughput', 'end_interval']
+                'start_interval (s)', 'throughput (bps)', 'end_interval (s)']
 
             logging.info("Throughput calculation completed.")
-            return throughput_df[['start_interval', 'end_interval', 'throughput']]
+            return throughput_df[['start_interval (s)', 'end_interval (s)', 'throughput (bps)']]
         except Exception as e:
             logging.error(f"Error calculating throughput. Exception: {e}")
-            return pd.DataFrame(columns=['start_interval', 'end_interval', 'throughput'])
+            return pd.DataFrame(columns=['start_interval (s)', 'end_interval (s)', 'throughput (bps)'])
 
 
 class Plotter:
