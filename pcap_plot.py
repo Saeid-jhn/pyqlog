@@ -125,8 +125,8 @@ class Plotter:
         logging.info("Plotting throughput.")
         try:
             plt.figure(figsize=(12, 6))
-            plt.plot(throughput['start_interval'],
-                     throughput['throughput'], label='Throughput', linestyle='-')
+            plt.plot(throughput['start_interval (s)'],
+                     throughput['throughput (bps)'], label='Throughput', linestyle='-')
 
             plt.title('Throughput')
             plt.xlabel('Time (s)')
