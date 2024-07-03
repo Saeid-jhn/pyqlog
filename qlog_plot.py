@@ -204,7 +204,7 @@ class SQlogFileParser(BaseQlogFileParser):
 
 
 class QlogDataProcessor:
-    def __init__(self, df_packets: pd.DataFrame, df_metrics: pd.DataFrame, df_offsets: pd.DataFrame, df_datagram: pd.DataFrame, time_interval: float):
+    def __init__(self, df_packets: pd.DataFrame, df_metrics: pd.DataFrame, df_offsets: pd.DataFrame, df_datagram: pd.DataFrame, time_interval: str):
         self.df_packets = df_packets
         self.df_metrics = df_metrics
         self.df_offsets = df_offsets
@@ -224,21 +224,21 @@ class QlogDataProcessor:
             self.df_datagram.set_index('datetime', inplace=True)
             self.df_offsets.set_index('datetime', inplace=True)
 
-            # Calculate rolling sum for throughput over 100ms window
+            # Calculate rolling sum for throughput over specified window
             self.df_datagram['throughput'] = self.df_datagram['length'].rolling(
-                f'{int(self.time_interval/1e3)}ms').sum().fillna(0).apply(self.byte_per_sec_to_bits_per_sec)
+                self.time_interval).sum().fillna(0).apply(self.byte_per_sec_to_bits_per_sec)
 
-            # Calculate rolling sum for goodput over 100ms window, considering non-duplicate offsets
+            # Calculate rolling sum for goodput over specified window, considering non-duplicate offsets
             df_goodput_non_dup = self.df_offsets[self.df_offsets['duplicate'] == False].copy(
             )
             df_goodput_non_dup.loc[:, 'goodput'] = df_goodput_non_dup['length'].rolling(
-                f'{int(self.time_interval/1e3)}ms').sum().fillna(0).apply(self.byte_per_sec_to_bits_per_sec)
+                self.time_interval).sum().fillna(0).apply(self.byte_per_sec_to_bits_per_sec)
 
             # Resample to the specified time interval
             df_throughput_resampled = self.df_datagram['throughput'].resample(
-                f'{int(self.time_interval/1e3)}ms').mean().fillna(0)
+                self.time_interval).mean().fillna(0)
             df_goodput_resampled = df_goodput_non_dup['goodput'].resample(
-                f'{int(self.time_interval/1e3)}ms').mean().fillna(0)
+                self.time_interval).mean().fillna(0)
 
             self.data_rate_df = pd.concat(
                 [df_throughput_resampled, df_goodput_resampled], axis=1).reset_index()
@@ -248,7 +248,7 @@ class QlogDataProcessor:
             self.data_rate_df['start_interval'] = (
                 self.data_rate_df['datetime'] - pd.Timestamp("1970-01-01")) // pd.Timedelta('1s')
             self.data_rate_df['end_interval'] = self.data_rate_df['start_interval'] + \
-                self.time_interval / 1e6
+                pd.Timedelta(self.time_interval).total_seconds()
             self.data_rate_df.drop(columns=['datetime'], inplace=True)
 
             # Reorder columns
@@ -473,8 +473,8 @@ def main():
                         help='List of qlog files to process')
     parser.add_argument('--debug', action='store_true',
                         help='Enable debug mode')
-    parser.add_argument('--interval', type=float, default=1000000.0,
-                        help='Time window interval in microseconds (default: 1000000.0)')
+    parser.add_argument('--interval', type=str, default='1000ms',
+                        help="Time window interval (default: '1000ms')")
     args = parser.parse_args()
 
     # Configure logging based on the debug mode
