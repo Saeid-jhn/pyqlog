@@ -214,36 +214,42 @@ class QlogDataProcessor:
 
     def calculate_throughput_and_goodput(self):
         try:
-            last_time = max(
-                self.df_datagram['time'].max(), self.df_offsets['time'].max())
-            last_interval_end = (
-                last_time // self.time_interval + 1) * self.time_interval
-            intervals = pd.interval_range(
-                start=0, end=last_interval_end, freq=self.time_interval, closed='left')
+            # Convert time to datetime
+            self.df_datagram['datetime'] = pd.to_datetime(
+                self.df_datagram['time'], unit='us')
+            self.df_offsets['datetime'] = pd.to_datetime(
+                self.df_offsets['time'], unit='us')
 
-            # Throughput calculation
-            self.df_datagram['interval'] = pd.cut(
-                self.df_datagram['time'], bins=intervals)
-            df_throughput = self.df_datagram.groupby('interval').agg(
-                {'length': 'sum'}).rename(columns={'length': 'throughput'})
-            df_throughput['throughput'] = df_throughput['throughput'].fillna(0).div(
-                self.time_interval).apply(self.megabyte_per_sec_to_bits_per_sec)
+            # Set datetime as index
+            self.df_datagram.set_index('datetime', inplace=True)
+            self.df_offsets.set_index('datetime', inplace=True)
 
-            # Goodput calculation
-            self.df_offsets['interval'] = pd.cut(
-                self.df_offsets['time'], bins=intervals)
-            df_goodput = self.df_offsets[self.df_offsets['duplicate'] == False].groupby(
-                'interval').agg({'length': 'sum'}).rename(columns={'length': 'goodput'})
-            df_goodput['goodput'] = df_goodput['goodput'].fillna(0).div(
-                self.time_interval).apply(self.megabyte_per_sec_to_bits_per_sec)
+            # Calculate rolling sum for throughput over 100ms window
+            self.df_datagram['throughput'] = self.df_datagram['length'].rolling(
+                f'{int(self.time_interval/1e3)}ms').sum().fillna(0).apply(self.megabyte_per_sec_to_bits_per_sec)
+
+            # Calculate rolling sum for goodput over 100ms window, considering non-duplicate offsets
+            df_goodput_non_dup = self.df_offsets[self.df_offsets['duplicate'] == False].copy(
+            )
+            df_goodput_non_dup.loc[:, 'goodput'] = df_goodput_non_dup['length'].rolling(
+                f'{int(self.time_interval/1e3)}ms').sum().fillna(0).apply(self.megabyte_per_sec_to_bits_per_sec)
+
+            # Resample to the specified time interval
+            df_throughput_resampled = self.df_datagram['throughput'].resample(
+                f'{int(self.time_interval/1e3)}ms').mean().fillna(0)
+            df_goodput_resampled = df_goodput_non_dup['goodput'].resample(
+                f'{int(self.time_interval/1e3)}ms').mean().fillna(0)
 
             self.data_rate_df = pd.concat(
-                [df_throughput, df_goodput], axis=1).reset_index()
-            self.data_rate_df['start_interval'] = self.data_rate_df['interval'].apply(
-                lambda x: x.left / 1e6)  # Convert to seconds
-            self.data_rate_df['end_interval'] = self.data_rate_df['interval'].apply(
-                lambda x: x.right / 1e6)   # Convert to seconds
-            self.data_rate_df.drop(columns=['interval'], inplace=True)
+                [df_throughput_resampled, df_goodput_resampled], axis=1).reset_index()
+            self.data_rate_df.columns = ['datetime', 'throughput', 'goodput']
+
+            # Convert datetime to seconds for plotting
+            self.data_rate_df['start_interval'] = (
+                self.data_rate_df['datetime'] - pd.Timestamp("1970-01-01")) // pd.Timedelta('1s')
+            self.data_rate_df['end_interval'] = self.data_rate_df['start_interval'] + \
+                self.time_interval / 1e6
+            self.data_rate_df.drop(columns=['datetime'], inplace=True)
 
             # Reorder columns
             self.data_rate_df = self.data_rate_df[[
@@ -254,7 +260,7 @@ class QlogDataProcessor:
 
     @staticmethod
     def megabyte_per_sec_to_bits_per_sec(mb_per_sec: float) -> float:
-        return mb_per_sec * 8 * 1e6  # Convert MB/s to bits per second
+        return mb_per_sec * 8  # Convert B/s to bits per second
 
 
 class QlogPlotter:
