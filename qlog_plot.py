@@ -256,6 +256,8 @@ class QlogDataProcessor:
                 self.data_rate_df['datetime'] - pd.Timestamp("1970-01-01")) // pd.Timedelta('1s')
             self.data_rate_df['end_interval'] = self.data_rate_df['start_interval'] + \
                 pd.Timedelta(self.time_interval).total_seconds()
+            self.data_rate_df['end_interval'] = self.data_rate_df['end_interval'].astype(
+                int)
             self.data_rate_df.drop(columns=['datetime'], inplace=True)
 
             # Reorder columns
