@@ -204,12 +204,13 @@ class SQlogFileParser(BaseQlogFileParser):
 
 
 class QlogDataProcessor:
-    def __init__(self, df_packets: pd.DataFrame, df_metrics: pd.DataFrame, df_offsets: pd.DataFrame, df_datagram: pd.DataFrame, time_interval: str):
+    def __init__(self, df_packets: pd.DataFrame, df_metrics: pd.DataFrame, df_offsets: pd.DataFrame, df_datagram: pd.DataFrame, time_interval: str, rolling_window: str):
         self.df_packets = df_packets
         self.df_metrics = df_metrics
         self.df_offsets = df_offsets
         self.df_datagram = df_datagram
         self.time_interval = time_interval
+        self.rolling_window = rolling_window
         self.data_rate_df = pd.DataFrame()
 
     def calculate_throughput_and_goodput(self):
@@ -224,17 +225,17 @@ class QlogDataProcessor:
             self.df_datagram.set_index('datetime', inplace=True)
             self.df_offsets.set_index('datetime', inplace=True)
 
-            # Calculate rolling sum for throughput over specified window
+            # Calculate rolling sum for throughput over the specified rolling window
             self.df_datagram['throughput'] = self.df_datagram['length'].rolling(
-                self.time_interval).sum().fillna(0).apply(self.byte_per_sec_to_bits_per_sec)
+                self.rolling_window).sum().fillna(0).apply(self.byte_per_sec_to_bits_per_sec)
 
-            # Calculate rolling sum for goodput over specified window, considering non-duplicate offsets
+            # Calculate rolling sum for goodput over the specified rolling window, considering non-duplicate offsets
             df_goodput_non_dup = self.df_offsets[self.df_offsets['duplicate'] == False].copy(
             )
             df_goodput_non_dup.loc[:, 'goodput'] = df_goodput_non_dup['length'].rolling(
-                self.time_interval).sum().fillna(0).apply(self.byte_per_sec_to_bits_per_sec)
+                self.rolling_window).sum().fillna(0).apply(self.byte_per_sec_to_bits_per_sec)
 
-            # Resample to the specified time interval
+            # Resample to the specified time interval (1 second)
             df_throughput_resampled = self.df_datagram['throughput'].resample(
                 self.time_interval).mean().fillna(0)
             df_goodput_resampled = df_goodput_non_dup['goodput'].resample(
@@ -259,8 +260,8 @@ class QlogDataProcessor:
             logging.error(f"Error in calculate_throughput_and_goodput: {e}")
 
     @staticmethod
-    def byte_per_sec_to_bits_per_sec(mb_per_sec: float) -> float:
-        return mb_per_sec * 8  # Convert B/s to bits per second
+    def byte_per_sec_to_bits_per_sec(b_per_sec: float) -> float:
+        return b_per_sec * 8  # Convert B/s to bits per second
 
 
 class QlogPlotter:
@@ -367,9 +368,10 @@ class QlogPlotter:
 
 
 class QlogProcessor:
-    def __init__(self, qlog_file: str, time_interval: float):
+    def __init__(self, qlog_file: str, time_interval: str, rolling_window: str):
         self.qlog_file = qlog_file
         self.time_interval = time_interval
+        self.rolling_window = rolling_window
         self.df_packets = pd.DataFrame()
         self.df_metrics = pd.DataFrame()
         self.df_offsets = pd.DataFrame()
@@ -387,7 +389,7 @@ class QlogProcessor:
             return self.qlog_file, None
 
         data_processor = QlogDataProcessor(
-            self.df_packets, self.df_metrics, self.df_offsets, self.df_datagram, self.time_interval)
+            self.df_packets, self.df_metrics, self.df_offsets, self.df_datagram, self.time_interval, self.rolling_window)
         data_processor.calculate_throughput_and_goodput()
         self.data_rate_df = data_processor.data_rate_df
 
@@ -423,12 +425,13 @@ class QlogProcessor:
             f'{self.qlog_file}.data_rate.csv', index=False)
 
 
-def process_files(qlog_files: List[str], time_interval: float):
+def process_files(qlog_files: List[str], time_interval: str, rolling_window: str):
     """
     Process all valid qlog files in the specified directory.
 
     :param qlog_files: List of qlog files, not checked for validity yet.
-    :param time_interval: Time window interval in microseconds.
+    :param time_interval: Time window interval.
+    :param rolling_window: Rolling window for precision.
     """
     valid_qlog_files = [f for f in qlog_files if is_valid_file(f)]
 
@@ -439,12 +442,12 @@ def process_files(qlog_files: List[str], time_interval: float):
     logging.info(f"Processing following valid qlog files: {valid_qlog_files}")
     pool = multiprocessing.Pool(multiprocessing.cpu_count())
     results = pool.starmap(process_single_file, [(
-        f, time_interval) for f in valid_qlog_files])
+        f, time_interval, rolling_window) for f in valid_qlog_files])
     logging.info(f"Processed {len(results)} files.")
 
 
-def process_single_file(qlog_file: str, time_interval: float) -> Tuple[str, Union[float, None]]:
-    processor = QlogProcessor(qlog_file, time_interval)
+def process_single_file(qlog_file: str, time_interval: str, rolling_window: str) -> Tuple[str, Union[float, None]]:
+    processor = QlogProcessor(qlog_file, time_interval, rolling_window)
     return processor.process_file()
 
 
@@ -475,6 +478,8 @@ def main():
                         help='Enable debug mode')
     parser.add_argument('--interval', type=str, default='1000ms',
                         help="Time window interval (default: '1000ms')")
+    parser.add_argument('--rolling-window', type=str, default='100ms',
+                        help="Rolling window for precision (default: '100ms')")
     args = parser.parse_args()
 
     # Configure logging based on the debug mode
@@ -489,7 +494,7 @@ def main():
 
     start_time_total = time.time()
 
-    process_files(args.file, args.interval)
+    process_files(args.file, args.interval, args.rolling_window)
 
     logging.info(f"Total run time: {time.time() - start_time_total} sec")
 
