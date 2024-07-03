@@ -235,6 +235,12 @@ class QlogDataProcessor:
             df_goodput_non_dup.loc[:, 'goodput'] = df_goodput_non_dup['length'].rolling(
                 self.rolling_window).sum().fillna(0).apply(self.byte_per_sec_to_bits_per_sec)
 
+            # Adjust the rolling sum to maintain the correct data rate
+            interval_ratio = pd.Timedelta('1000ms').total_seconds(
+            ) / pd.Timedelta(self.rolling_window).total_seconds()
+            self.df_datagram['throughput'] *= interval_ratio
+            df_goodput_non_dup['goodput'] *= interval_ratio
+
             # Resample to the specified time interval (1 second)
             df_throughput_resampled = self.df_datagram['throughput'].resample(
                 self.time_interval).mean().fillna(0)
@@ -478,8 +484,8 @@ def main():
                         help='Enable debug mode')
     parser.add_argument('--interval', type=str, default='1000ms',
                         help="Time window interval (default: '1000ms')")
-    parser.add_argument('--rolling-window', type=str, default='100ms',
-                        help="Rolling window for precision (default: '100ms')")
+    parser.add_argument('--rolling-window', type=str, default='1000ms',
+                        help="Rolling window for precision (default: '1000ms')")
     args = parser.parse_args()
 
     # Configure logging based on the debug mode
