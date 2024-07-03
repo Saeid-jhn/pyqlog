@@ -226,13 +226,13 @@ class QlogDataProcessor:
 
             # Calculate rolling sum for throughput over 100ms window
             self.df_datagram['throughput'] = self.df_datagram['length'].rolling(
-                f'{int(self.time_interval/1e3)}ms').sum().fillna(0).apply(self.megabyte_per_sec_to_bits_per_sec)
+                f'{int(self.time_interval/1e3)}ms').sum().fillna(0).apply(self.byte_per_sec_to_bits_per_sec)
 
             # Calculate rolling sum for goodput over 100ms window, considering non-duplicate offsets
             df_goodput_non_dup = self.df_offsets[self.df_offsets['duplicate'] == False].copy(
             )
             df_goodput_non_dup.loc[:, 'goodput'] = df_goodput_non_dup['length'].rolling(
-                f'{int(self.time_interval/1e3)}ms').sum().fillna(0).apply(self.megabyte_per_sec_to_bits_per_sec)
+                f'{int(self.time_interval/1e3)}ms').sum().fillna(0).apply(self.byte_per_sec_to_bits_per_sec)
 
             # Resample to the specified time interval
             df_throughput_resampled = self.df_datagram['throughput'].resample(
@@ -259,7 +259,7 @@ class QlogDataProcessor:
             logging.error(f"Error in calculate_throughput_and_goodput: {e}")
 
     @staticmethod
-    def megabyte_per_sec_to_bits_per_sec(mb_per_sec: float) -> float:
+    def byte_per_sec_to_bits_per_sec(mb_per_sec: float) -> float:
         return mb_per_sec * 8  # Convert B/s to bits per second
 
 
