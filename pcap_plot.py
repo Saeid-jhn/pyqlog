@@ -13,23 +13,17 @@ from matplotlib.ticker import FuncFormatter
 
 
 class PcapFileProcessor:
-    def __init__(self, pcap_file: str, plot_seq: bool = False, filter_src_ip: Optional[str] = None,
-                 filter_src_port: Optional[int] = None, filter_dst_ip: Optional[str] = None,
-                 filter_dst_port: Optional[int] = None, stream_index: Optional[int] = None,
+    def __init__(self, pcap_file: str, plot_seq: bool = False, stream_index: Optional[int] = None,
                  filter_tcp: bool = False, filter_quic: bool = False):
         self.pcap_file = pcap_file
         self.plot_seq = plot_seq
-        self.filter_src_ip = filter_src_ip
-        self.filter_src_port = filter_src_port
-        self.filter_dst_ip = filter_dst_ip
-        self.filter_dst_port = filter_dst_port
         self.stream_index = stream_index
         self.filter_tcp = filter_tcp
         self.filter_quic = filter_quic
-        self.packets: List[Tuple[float, int, str, int]] = []
+        self.packets: List[Tuple[float, int, str]] = []
         self.tcp_seq_data: List[Tuple[float, int, str, str, int, int]] = []
 
-    def read_pcap(self) -> Tuple[List[Tuple[float, int, str, int]], List[Tuple[float, int, str, str, int, int]]]:
+    def read_pcap(self) -> Tuple[List[Tuple[float, int, str]], List[Tuple[float, int, str, str, int, int]]]:
         logging.info(f"Starting to read pcap file: {self.pcap_file}")
         start_time_read = time.time()
         try:
@@ -41,8 +35,6 @@ class PcapFileProcessor:
                     timestamp = float(packet.sniff_timestamp)
                     length = int(packet.length)
                     protocol = 'Other'
-                    src_port = int(packet[packet.transport_layer].srcport) if hasattr(
-                        packet[packet.transport_layer], 'srcport') else 0
 
                     if start_time is None:
                         start_time = timestamp
@@ -56,7 +48,7 @@ class PcapFileProcessor:
                         protocol = 'QUIC'
 
                     self.packets.append(
-                        (relative_timestamp, length, protocol, src_port))
+                        (relative_timestamp, length, protocol))
                 except AttributeError:
                     pass
 
@@ -77,27 +69,23 @@ class PcapFileProcessor:
             dst_port = int(packet.tcp.dstport)
             seq_num = int(packet.tcp.seq)
 
-            if (self.filter_src_ip and self.filter_dst_ip and self.filter_src_port and self.filter_dst_port):
-                if (src_ip == self.filter_src_ip and dst_ip == self.filter_dst_ip and
-                        src_port == self.filter_src_port and dst_port == self.filter_dst_port):
-                    self.tcp_seq_data.append(
-                        (relative_timestamp, seq_num, src_ip, dst_ip, src_port, dst_port))
-            else:
-                self.tcp_seq_data.append(
-                    (relative_timestamp, seq_num, src_ip, dst_ip, src_port, dst_port))
+            self.tcp_seq_data.append(
+                (relative_timestamp, seq_num, src_ip, dst_ip, src_port, dst_port))
         except Exception as e:
             logging.error(f"Error processing TCP packet. Exception: {e}")
 
 
 class ThroughputCalculator:
-    def __init__(self, interval: float):
+    def __init__(self, interval: float, include_tcp: bool, include_quic: bool):
         self.interval = interval
+        self.include_tcp = include_tcp
+        self.include_quic = include_quic
 
-    def calculate(self, packets: List[Tuple[float, int, str, int]]) -> pd.DataFrame:
+    def calculate(self, packets: List[Tuple[float, int, str]]) -> pd.DataFrame:
         logging.info("Calculating throughput.")
         try:
             df = pd.DataFrame(packets, columns=[
-                              'Timestamp', 'Length', 'Protocol', 'SrcPort'])
+                              'Timestamp', 'Length', 'Protocol'])
             df['Time_Bin'] = (df['Timestamp'] // self.interval) * self.interval
 
             min_time_bin = df['Time_Bin'].min()
@@ -113,16 +101,25 @@ class ThroughputCalculator:
             throughput_df['throughput (bps)'] = throughput_df.sum(
                 axis=1) - throughput_df['Time_Bin'] - throughput_df['end_interval']
             throughput_df.columns.name = None
-            throughput_df = throughput_df[[
-                'Time_Bin', 'end_interval', 'throughput (bps)', 'TCP', 'QUIC']]
-            throughput_df.columns = [
-                'start_interval (s)', 'end_interval (s)', 'throughput (bps)', 'tcp_throughput (bps)', 'quic_throughput (bps)']
+
+            columns = [
+                'start_interval (s)', 'end_interval (s)', 'throughput (bps)']
+            if self.include_tcp:
+                columns.append('tcp_throughput (bps)')
+            if self.include_quic:
+                columns.append('quic_throughput (bps)')
+
+            throughput_df = throughput_df[['Time_Bin', 'end_interval', 'throughput (bps)'] + (
+                ['TCP'] if self.include_tcp else []) + (['QUIC'] if self.include_quic else [])]
+            throughput_df.columns = columns
 
             logging.info("Throughput calculation completed.")
             return throughput_df
         except Exception as e:
             logging.error(f"Error calculating throughput. Exception: {e}")
-            return pd.DataFrame(columns=['start_interval (s)', 'end_interval (s)', 'throughput (bps)', 'tcp_throughput (bps)', 'quic_throughput (bps)'])
+            return pd.DataFrame(columns=['start_interval (s)', 'end_interval (s)', 'throughput (bps)'] +
+                                (['tcp_throughput (bps)'] if self.include_tcp else []) +
+                                (['quic_throughput (bps)'] if self.include_quic else []))
 
 
 class Plotter:
@@ -141,10 +138,13 @@ class Plotter:
             # Convert zero throughputs to np.nan to create gaps in the plot
             throughput['throughput (bps)'] = throughput['throughput (bps)'].replace(
                 0, np.nan)
-            throughput['tcp_throughput (bps)'] = throughput['tcp_throughput (bps)'].replace(
-                0, np.nan)
-            throughput['quic_throughput (bps)'] = throughput['quic_throughput (bps)'].replace(
-                0, np.nan)
+
+            if plot_tcp and 'tcp_throughput (bps)' in throughput.columns:
+                throughput['tcp_throughput (bps)'] = throughput['tcp_throughput (bps)'].replace(
+                    0, np.nan)
+            if plot_quic and 'quic_throughput (bps)' in throughput.columns:
+                throughput['quic_throughput (bps)'] = throughput['quic_throughput (bps)'].replace(
+                    0, np.nan)
 
             plt.figure(figsize=(12, 6))
 
@@ -215,13 +215,13 @@ class Plotter:
 
 
 class PcapAnalyzer:
-    def __init__(self, pcap_file: str, interval: float, plot_seq: bool, filter_src_ip: Optional[str],
-                 filter_src_port: Optional[int], filter_dst_ip: Optional[str], filter_dst_port: Optional[int],
-                 stream_index: Optional[int] = None, filter_tcp: bool = False, filter_quic: bool = False):
+    def __init__(self, pcap_file: str, interval: float, plot_seq: bool, stream_index: Optional[int] = None,
+                 filter_tcp: bool = False, filter_quic: bool = False):
         self.pcap_file = pcap_file
         self.processor = PcapFileProcessor(
-            pcap_file, plot_seq, filter_src_ip, filter_src_port, filter_dst_ip, filter_dst_port, stream_index, filter_tcp, filter_quic)
-        self.calculator = ThroughputCalculator(interval)
+            pcap_file, plot_seq, stream_index, filter_tcp, filter_quic)
+        self.calculator = ThroughputCalculator(
+            interval, filter_tcp, filter_quic)
         self.plotter = Plotter(os.path.splitext(pcap_file)[0])
         self.logger = logging.getLogger(__name__)
         self.setup_logging()
@@ -256,16 +256,13 @@ class PcapAnalyzer:
         self.logger.info(f"Total runtime: {end_time - start_time:.2f} seconds")
 
 
-def analyze_pcap_file(pcap_file: str, interval: float, plot_seq: bool, filter_src_ip: Optional[str],
-                      filter_src_port: Optional[int], filter_dst_ip: Optional[str], filter_dst_port: Optional[int],
+def analyze_pcap_file(pcap_file: str, interval: float, plot_seq: bool,
                       stream_index: Optional[int], filter_tcp: bool, filter_quic: bool) -> None:
     if not os.path.exists(pcap_file):
         logging.error(f"Pcap file does not exist: {pcap_file}")
         return
 
     analyzer = PcapAnalyzer(pcap_file=pcap_file, interval=interval, plot_seq=plot_seq,
-                            filter_src_ip=filter_src_ip, filter_src_port=filter_src_port,
-                            filter_dst_ip=filter_dst_ip, filter_dst_port=filter_dst_port,
                             stream_index=stream_index, filter_tcp=filter_tcp, filter_quic=filter_quic)
     analyzer.run_analysis(filter_tcp, filter_quic)
 
@@ -279,14 +276,6 @@ def main() -> None:
                         help="Time interval in seconds for calculating throughput")
     parser.add_argument("--plot-seq", action="store_true",
                         help="Plot TCP sequence number over time (only for TCP)")
-    parser.add_argument("--filter-src-ip", type=str,
-                        help="Source IP address to filter")
-    parser.add_argument("--filter-src-port", type=int,
-                        help="Source port to filter")
-    parser.add_argument("--filter-dst-ip", type=str,
-                        help="Destination IP address to filter")
-    parser.add_argument("--filter-dst-port", type=int,
-                        help="Destination port to filter")
     parser.add_argument("--stream-index", type=int,
                         help="Filter for a specific TCP stream index")
     parser.add_argument("--tcp", action="store_true",
@@ -296,8 +285,7 @@ def main() -> None:
     args = parser.parse_args()
 
     with Pool(cpu_count()) as pool:
-        pool.starmap(analyze_pcap_file, [(pcap_file, args.interval, args.plot_seq, args.filter_src_ip,
-                                          args.filter_src_port, args.filter_dst_ip, args.filter_dst_port,
+        pool.starmap(analyze_pcap_file, [(pcap_file, args.interval, args.plot_seq,
                                           args.stream_index, args.tcp, args.quic) for pcap_file in args.pcap_files])
 
 
