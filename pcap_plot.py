@@ -1,3 +1,4 @@
+
 import pyshark
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -8,6 +9,7 @@ import os
 import logging
 import time
 from typing import List, Tuple, Optional
+from glob import glob
 from multiprocessing import Pool, cpu_count
 from matplotlib.ticker import FuncFormatter
 
@@ -284,9 +286,15 @@ def main() -> None:
                         help="Filter QUIC connections")
     args = parser.parse_args()
 
+    # Wildcard file input processing
+    files = []
+    for item in args.pcap_files:
+        for file in glob(item):
+            files.append(file)
+
     with Pool(cpu_count()) as pool:
         pool.starmap(analyze_pcap_file, [(pcap_file, args.interval, args.plot_seq,
-                                          args.stream_index, args.tcp, args.quic) for pcap_file in args.pcap_files])
+                                          args.stream_index, args.tcp, args.quic) for pcap_file in files])
 
 
 if __name__ == "__main__":
