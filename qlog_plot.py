@@ -3,7 +3,7 @@
 
 This script processes qlog files and generates visualizations based on the data.
 """
-
+from glob import glob
 import json
 import os
 import time
@@ -505,7 +505,7 @@ def main():
     # Wildcard file input processing
     files = []
     for item in args.file:
-        for file in glob.glob(item):
+        for file in glob(item):
             files.append(file)
 
     process_files(files, args.interval, args.rolling_window)
