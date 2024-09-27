@@ -3,7 +3,7 @@
 
 This script processes qlog files and generates visualizations based on the data.
 """
-from glob import glob
+
 import json
 import os
 import time
@@ -12,6 +12,7 @@ import traceback
 import argparse
 import multiprocessing
 from enum import Enum
+from glob import glob
 from typing import List, Tuple, Union
 
 import matplotlib.pyplot as plt
