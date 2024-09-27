@@ -502,7 +502,13 @@ def main():
 
     start_time_total = time.time()
 
-    process_files(args.file, args.interval, args.rolling_window)
+    # Wildcard file input processing
+    files = []
+    for item in args.file:
+        for file in glob.glob(item):
+            files.append(file)
+
+    process_files(files, args.interval, args.rolling_window)
 
     logging.info(f"Total run time: {time.time() - start_time_total} sec")
 
