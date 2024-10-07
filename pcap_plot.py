@@ -20,10 +20,11 @@ class PcapFileProcessor:
         self.stream_index = stream_index
         self.filter_tcp = filter_tcp
         self.filter_quic = filter_quic
-        self.packets: List[Tuple[float, int, str]] = []
+        # Include src_port and dst_port
+        self.packets: List[Tuple[float, int, str, int, int]] = []
         self.tcp_seq_data: List[Tuple[float, int, str, str, int, int]] = []
 
-    def read_pcap(self) -> Tuple[List[Tuple[float, int, str]], List[Tuple[float, int, str, str, int, int]]]:
+    def read_pcap(self) -> Tuple[List[Tuple[float, int, str, int, int]], List[Tuple[float, int, str, str, int, int]]]:
         logging.info(f"Starting to read pcap file: {self.pcap_file}")
         start_time_read = time.time()
         try:
@@ -41,14 +42,25 @@ class PcapFileProcessor:
 
                     relative_timestamp = timestamp - start_time
 
+                    src_port = None
+                    dst_port = None
+
                     if 'TCP' in packet:
                         protocol = 'TCP'
+                        src_port = int(packet.tcp.srcport)
+                        dst_port = int(packet.tcp.dstport)
                         self.process_tcp_packet(packet, relative_timestamp)
                     elif 'QUIC' in packet:
                         protocol = 'QUIC'
+                        src_port = int(packet.udp.srcport)
+                        dst_port = int(packet.udp.dstport)
+                    elif 'UDP' in packet:
+                        protocol = 'UDP'
+                        src_port = int(packet.udp.srcport)
+                        dst_port = int(packet.udp.dstport)
 
                     self.packets.append(
-                        (relative_timestamp, length, protocol))
+                        (relative_timestamp, length, protocol, src_port, dst_port))
                 except AttributeError:
                     pass
 
@@ -76,57 +88,62 @@ class PcapFileProcessor:
 
 
 class ThroughputCalculator:
-    def __init__(self, interval: float, include_tcp: bool, include_quic: bool):
+    def __init__(self, interval: float, include_tcp: bool, include_quic: bool, ports: Optional[List[int]] = None):
         self.interval = interval
         self.include_tcp = include_tcp
         self.include_quic = include_quic
+        self.ports = ports  # List of ports to calculate throughput for
 
-    def calculate(self, packets: List[Tuple[float, int, str]]) -> pd.DataFrame:
+    def calculate(self, packets: List[Tuple[float, int, str, int, int]]) -> pd.DataFrame:
         logging.info("Calculating throughput.")
         try:
             df = pd.DataFrame(packets, columns=[
-                              'Timestamp', 'Length', 'Protocol'])
+                              'Timestamp', 'Length', 'Protocol', 'SrcPort', 'DstPort'])
             df['Time_Bin'] = (df['Timestamp'] // self.interval) * self.interval
 
-            min_time_bin = df['Time_Bin'].min()
-            max_time_bin = df['Time_Bin'].max()
-            complete_time_bins = pd.Series(
-                np.arange(min_time_bin, max_time_bin + self.interval, self.interval))
+            # Calculate total throughput
+            total_throughput = df.groupby(
+                'Time_Bin')['Length'].sum().reset_index()
+            # bits per second
+            total_throughput['Throughput'] = total_throughput['Length'] * \
+                8 / self.interval
+            total_throughput = total_throughput[['Time_Bin', 'Throughput']]
+            total_throughput.rename(
+                columns={'Throughput': 'TotalThroughput'}, inplace=True)
 
-            throughput = df.groupby(['Time_Bin', 'Protocol'])[
-                'Length'].sum().unstack(fill_value=0) * 8 / self.interval
-            throughput_df = throughput.reset_index()
-            throughput_df['end_interval'] = throughput_df['Time_Bin'] + \
-                self.interval
-            throughput_df['throughput (bps)'] = throughput_df.sum(
-                axis=1) - throughput_df['Time_Bin'] - throughput_df['end_interval']
-            throughput_df.columns.name = None
+            # Melt the dataframe to have one port per row
+            port_df = df.melt(id_vars=['Timestamp', 'Time_Bin', 'Length', 'Protocol'],
+                              value_vars=['SrcPort', 'DstPort'],
+                              var_name='PortType', value_name='Port')
 
-            columns = [
-                'start_interval (s)', 'end_interval (s)', 'throughput (bps)']
-            if self.include_tcp:
-                columns.append('tcp_throughput (bps)')
-            if self.include_quic:
-                columns.append('quic_throughput (bps)')
+            # If ports are specified, filter only those ports for calculation
+            if self.ports:
+                port_df = port_df[port_df['Port'].isin(self.ports)]
 
-            throughput_df = throughput_df[['Time_Bin', 'end_interval', 'throughput (bps)'] + (
-                ['TCP'] if self.include_tcp else []) + (['QUIC'] if self.include_quic else [])]
-            throughput_df.columns = columns
+            # Group by Time_Bin and Port, sum the lengths, and calculate throughput
+            port_throughput = port_df.groupby(['Time_Bin', 'Port'])[
+                'Length'].sum().reset_index()
+            # bits per second
+            port_throughput['Throughput'] = port_throughput['Length'] * \
+                8 / self.interval
+
+            # Merge total throughput with port throughput
+            throughput = pd.merge(
+                port_throughput, total_throughput, on='Time_Bin', how='left')
 
             logging.info("Throughput calculation completed.")
-            return throughput_df
+            return throughput
         except Exception as e:
             logging.error(f"Error calculating throughput. Exception: {e}")
-            return pd.DataFrame(columns=['start_interval (s)', 'end_interval (s)', 'throughput (bps)'] +
-                                (['tcp_throughput (bps)'] if self.include_tcp else []) +
-                                (['quic_throughput (bps)'] if self.include_quic else []))
+            return pd.DataFrame()
 
 
 class Plotter:
-    def __init__(self, base_name: str):
+    def __init__(self, base_name: str, plot_total: bool = False):
         self.base_name = f"{base_name}.pcap"
+        self.plot_total = plot_total  # Flag to indicate whether to plot total throughput
 
-    def plot_throughput(self, throughput: pd.DataFrame, plot_tcp: bool, plot_quic: bool) -> None:
+    def plot_throughput(self, throughput: pd.DataFrame, ports: List[int]) -> None:
         sns.set()
 
         if throughput.empty:
@@ -135,31 +152,24 @@ class Plotter:
 
         logging.info("Plotting throughput.")
         try:
-            # Convert zero throughputs to np.nan to create gaps in the plot
-            throughput['throughput (bps)'] = throughput['throughput (bps)'].replace(
-                0, np.nan)
-
-            if plot_tcp and 'tcp_throughput (bps)' in throughput.columns:
-                throughput['tcp_throughput (bps)'] = throughput['tcp_throughput (bps)'].replace(
-                    0, np.nan)
-            if plot_quic and 'quic_throughput (bps)' in throughput.columns:
-                throughput['quic_throughput (bps)'] = throughput['quic_throughput (bps)'].replace(
-                    0, np.nan)
-
             plt.figure(figsize=(12, 6))
 
-            if plot_tcp and 'tcp_throughput (bps)' in throughput.columns:
-                sns.lineplot(x='start_interval (s)', y='tcp_throughput (bps)',
-                             data=throughput, label='TCP', linestyle='-', marker=None)
+            if ports:
+                for port in ports:
+                    port_data = throughput[throughput['Port'] == port]
+                    if port_data.empty:
+                        logging.info(f"No data available for port {port}")
+                        continue
+                    sns.lineplot(x='Time_Bin', y='Throughput',
+                                 data=port_data, label=f'Port {port}', linestyle='-', marker=None)
 
-            if plot_quic and 'quic_throughput (bps)' in throughput.columns:
-                sns.lineplot(x='start_interval (s)', y='quic_throughput (bps)',
-                             data=throughput, label='QUIC', linestyle='-', marker=None)
+            if self.plot_total:
+                total_data = throughput[['Time_Bin',
+                                         'TotalThroughput']].drop_duplicates()
+                sns.lineplot(x='Time_Bin', y='TotalThroughput',
+                             data=total_data, label='Total', linestyle='--', marker=None, color='black')
 
-            sns.lineplot(x='start_interval (s)', y='throughput (bps)',
-                         data=throughput, label='Total', linestyle='--', marker=None)
-
-            plt.title('Throughput')
+            plt.title('Throughput by Port')
             plt.xlabel('Time (s)')
             plt.ylabel('Data rate (bps)')
             plt.legend()
@@ -179,7 +189,7 @@ class Plotter:
         except Exception as e:
             logging.error(f"Error plotting throughput. Exception: {e}")
 
-    def plot_time_sequence(self, tcp_seq_data: List[Tuple[float, int, str, str, int, int]]) -> None:
+    def plot_time_sequence(self, tcp_seq_data: List[Tuple[float, int, str, str, int, int]], ports: List[int]) -> None:
         if not tcp_seq_data:
             logging.info("No TCP sequence data available to plot.")
             return
@@ -191,9 +201,19 @@ class Plotter:
 
             plt.figure(figsize=(12, 6))
 
-            for (src_ip, dst_ip, src_port, dst_port), group in seq_df.groupby(['SrcIP', 'DstIP', 'SrcPort', 'DstPort']):
-                plt.scatter(group['Timestamp'], group['SequenceNumber'],
-                            label=f"{src_ip}:{src_port} -> {dst_ip}:{dst_port}", s=5)
+            if ports:
+                for port in ports:
+                    port_data = seq_df[(seq_df['SrcPort'] == port) | (
+                        seq_df['DstPort'] == port)]
+                    if port_data.empty:
+                        logging.info(
+                            f"No sequence data available for port {port}")
+                        continue
+                    plt.scatter(port_data['Timestamp'], port_data['SequenceNumber'],
+                                label=f'Port {port}', s=5)
+            else:
+                plt.scatter(seq_df['Timestamp'], seq_df['SequenceNumber'],
+                            label='TCP Sequence', s=5)
 
             plt.title('TCP Sequence Number Over Time')
             plt.xlabel('Time (s)')
@@ -216,15 +236,16 @@ class Plotter:
 
 class PcapAnalyzer:
     def __init__(self, pcap_file: str, interval: float, plot_seq: bool, stream_index: Optional[int] = None,
-                 filter_tcp: bool = False, filter_quic: bool = False):
+                 filter_tcp: bool = False, filter_quic: bool = False, ports: Optional[List[int]] = None, plot_total: bool = False):
         self.pcap_file = pcap_file
         self.processor = PcapFileProcessor(
             pcap_file, plot_seq, stream_index, filter_tcp, filter_quic)
         self.calculator = ThroughputCalculator(
-            interval, filter_tcp, filter_quic)
-        self.plotter = Plotter(os.path.splitext(pcap_file)[0])
+            interval, filter_tcp, filter_quic, ports)
+        self.plotter = Plotter(os.path.splitext(pcap_file)[0], plot_total)
         self.logger = logging.getLogger(__name__)
         self.setup_logging()
+        self.ports = ports  # Ports for plotting
 
     def setup_logging(self) -> None:
         logging.basicConfig(level=logging.INFO,
@@ -238,14 +259,14 @@ class PcapAnalyzer:
         packets, tcp_seq_data = self.processor.read_pcap()
         throughput = self.calculator.calculate(packets)
 
-        self.plotter.plot_throughput(throughput, plot_tcp, plot_quic)
+        self.plotter.plot_throughput(throughput, self.ports)
         throughput.to_csv(
             f"{self.plotter.base_name}.data_rate.csv", index=False)
         self.logger.info(
             f"Throughput data saved to {self.plotter.base_name}.data_rate.csv")
 
         if tcp_seq_data:
-            self.plotter.plot_time_sequence(tcp_seq_data)
+            self.plotter.plot_time_sequence(tcp_seq_data, self.ports)
             seq_df = pd.DataFrame(tcp_seq_data, columns=[
                                   'Timestamp', 'SequenceNumber', 'SrcIP', 'DstIP', 'SrcPort', 'DstPort'])
             seq_df.to_csv(f"{self.plotter.base_name}.seq.csv", index=False)
@@ -257,13 +278,13 @@ class PcapAnalyzer:
 
 
 def analyze_pcap_file(pcap_file: str, interval: float, plot_seq: bool,
-                      stream_index: Optional[int], filter_tcp: bool, filter_quic: bool) -> None:
+                      stream_index: Optional[int], filter_tcp: bool, filter_quic: bool, ports: Optional[List[int]], plot_total: bool) -> None:
     if not os.path.exists(pcap_file):
         logging.error(f"Pcap file does not exist: {pcap_file}")
         return
 
     analyzer = PcapAnalyzer(pcap_file=pcap_file, interval=interval, plot_seq=plot_seq,
-                            stream_index=stream_index, filter_tcp=filter_tcp, filter_quic=filter_quic)
+                            stream_index=stream_index, filter_tcp=filter_tcp, filter_quic=filter_quic, ports=ports, plot_total=plot_total)
     analyzer.run_analysis(filter_tcp, filter_quic)
 
 
@@ -282,11 +303,15 @@ def main() -> None:
                         help="Filter TCP connections")
     parser.add_argument("--quic", action="store_true",
                         help="Filter QUIC connections")
+    parser.add_argument("--port", type=int, nargs='+',
+                        help="List of ports to plot separately")  # Ports argument
+    parser.add_argument("--total", action="store_true",
+                        help="Plot total throughput alongside per-port throughput")  # Added --total argument
     args = parser.parse_args()
 
     with Pool(cpu_count()) as pool:
         pool.starmap(analyze_pcap_file, [(pcap_file, args.interval, args.plot_seq,
-                                          args.stream_index, args.tcp, args.quic) for pcap_file in args.pcap_files])
+                                          args.stream_index, args.tcp, args.quic, args.port, args.total) for pcap_file in args.pcap_files])
 
 
 if __name__ == "__main__":
