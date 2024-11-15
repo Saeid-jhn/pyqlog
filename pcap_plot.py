@@ -7,7 +7,7 @@ import argparse
 import os
 import logging
 import time
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 from multiprocessing import Pool, cpu_count
 from matplotlib.ticker import FuncFormatter
 
@@ -139,9 +139,10 @@ class ThroughputCalculator:
 
 
 class Plotter:
-    def __init__(self, base_name: str, plot_total: bool = False):
+    def __init__(self, base_name: str, plot_total: bool = False, port_legends: Optional[Dict[int, str]] = None):
         self.base_name = f"{base_name}.pcap"
         self.plot_total = plot_total  # Flag to indicate whether to plot total throughput
+        self.port_legends = port_legends or {}  # Mapping from port to legend
 
     def plot_throughput(self, throughput: pd.DataFrame, ports: List[int]) -> None:
         sns.set()
@@ -160,8 +161,10 @@ class Plotter:
                     if port_data.empty:
                         logging.info(f"No data available for port {port}")
                         continue
+                    legend = self.port_legends.get(
+                        port, f'Port {port}')  # Use legend if available
                     sns.lineplot(x='Time_Bin', y='Throughput',
-                                 data=port_data, label=f'Port {port}', linestyle='-', marker=None)
+                                 data=port_data, label=legend, linestyle='-', marker=None)
 
             if self.plot_total:
                 total_data = throughput[['Time_Bin',
@@ -209,8 +212,10 @@ class Plotter:
                         logging.info(
                             f"No sequence data available for port {port}")
                         continue
+                    legend = self.port_legends.get(
+                        port, f'Port {port}')  # Use legend if available
                     plt.scatter(port_data['Timestamp'], port_data['SequenceNumber'],
-                                label=f'Port {port}', s=5)
+                                label=legend, s=5)
             else:
                 plt.scatter(seq_df['Timestamp'], seq_df['SequenceNumber'],
                             label='TCP Sequence', s=5)
@@ -236,13 +241,16 @@ class Plotter:
 
 class PcapAnalyzer:
     def __init__(self, pcap_file: str, interval: float, plot_seq: bool, stream_index: Optional[int] = None,
-                 filter_tcp: bool = False, filter_quic: bool = False, ports: Optional[List[int]] = None, plot_total: bool = False):
+                 filter_tcp: bool = False, filter_quic: bool = False, ports: Optional[List[int]] = None,
+                 plot_total: bool = False, port_legends: Optional[Dict[int, str]] = None, output_dir: str = "output"):
         self.pcap_file = pcap_file
         self.processor = PcapFileProcessor(
             pcap_file, plot_seq, stream_index, filter_tcp, filter_quic)
         self.calculator = ThroughputCalculator(
             interval, filter_tcp, filter_quic, ports)
-        self.plotter = Plotter(os.path.splitext(pcap_file)[0], plot_total)
+        base_name = os.path.splitext(os.path.basename(pcap_file))[0]
+        self.plotter = Plotter(os.path.join(
+            output_dir, base_name), plot_total, port_legends)
         self.logger = logging.getLogger(__name__)
         self.setup_logging()
         self.ports = ports  # Ports for plotting
@@ -278,13 +286,24 @@ class PcapAnalyzer:
 
 
 def analyze_pcap_file(pcap_file: str, interval: float, plot_seq: bool,
-                      stream_index: Optional[int], filter_tcp: bool, filter_quic: bool, ports: Optional[List[int]], plot_total: bool) -> None:
+                      stream_index: Optional[int], filter_tcp: bool, filter_quic: bool, ports: Optional[List[int]],
+                      plot_total: bool, port_legends: Optional[Dict[int, str]], output_dir: str) -> None:
     if not os.path.exists(pcap_file):
         logging.error(f"Pcap file does not exist: {pcap_file}")
         return
 
-    analyzer = PcapAnalyzer(pcap_file=pcap_file, interval=interval, plot_seq=plot_seq,
-                            stream_index=stream_index, filter_tcp=filter_tcp, filter_quic=filter_quic, ports=ports, plot_total=plot_total)
+    analyzer = PcapAnalyzer(
+        pcap_file=pcap_file,
+        interval=interval,
+        plot_seq=plot_seq,
+        stream_index=stream_index,
+        filter_tcp=filter_tcp,
+        filter_quic=filter_quic,
+        ports=ports,
+        plot_total=plot_total,
+        port_legends=port_legends,
+        output_dir=output_dir
+    )
     analyzer.run_analysis(filter_tcp, filter_quic)
 
 
@@ -305,13 +324,36 @@ def main() -> None:
                         help="Filter QUIC connections")
     parser.add_argument("--port", type=int, nargs='+',
                         help="List of ports to plot separately")  # Ports argument
+    parser.add_argument("--port-legend", type=str, nargs='+',
+                        help="List of legends corresponding to the ports specified in --port")
     parser.add_argument("--total", action="store_true",
                         help="Plot total throughput alongside per-port throughput")  # Added --total argument
+    parser.add_argument("--output-dir", type=str, default="output",
+                        help="Directory to save output files")  # Added --output-dir argument
     args = parser.parse_args()
+
+    # Validate port and port-legend arguments
+    port_legends_mapping = {}
+    if args.port_legend:
+        if not args.port:
+            parser.error(
+                "--port-legend requires --port to be specified with corresponding ports.")
+        if len(args.port) != len(args.port_legend):
+            parser.error(
+                f"The number of --port-legend arguments ({len(args.port_legend)}) does not match the number of --port arguments ({len(args.port)}).")
+        # Create a mapping from port to legend
+        port_legends_mapping = dict(zip(args.port, args.port_legend))
+    elif args.port:
+        # If no legends provided, use port numbers as legends
+        port_legends_mapping = {port: f"Port {port}" for port in args.port}
+
+    # Create output directory if it doesn't exist
+    os.makedirs(args.output_dir, exist_ok=True)
 
     with Pool(cpu_count()) as pool:
         pool.starmap(analyze_pcap_file, [(pcap_file, args.interval, args.plot_seq,
-                                          args.stream_index, args.tcp, args.quic, args.port, args.total) for pcap_file in args.pcap_files])
+                                          args.stream_index, args.tcp, args.quic, args.port,
+                                          args.total, port_legends_mapping, args.output_dir) for pcap_file in args.pcap_files])
 
 
 if __name__ == "__main__":
