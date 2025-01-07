@@ -111,10 +111,9 @@ class ThroughputCalculator:
             total_throughput.rename(
                 columns={'Throughput': 'TotalThroughput'}, inplace=True)
 
-            # Melt the dataframe to have one port per row
-            port_df = df.melt(id_vars=['Timestamp', 'Time_Bin', 'Length', 'Protocol'],
-                              value_vars=['SrcPort', 'DstPort'],
-                              var_name='PortType', value_name='Port')
+            # Consider only Destination Ports to avoid double counting
+            port_df = df[['Time_Bin', 'DstPort', 'Length']].rename(columns={'DstPort': 'Port'})
+
 
             # If ports are specified, filter only those ports for calculation
             if self.ports:
@@ -287,10 +286,13 @@ class PcapAnalyzer:
 
 def analyze_pcap_file(pcap_file: str, interval: float, plot_seq: bool,
                       stream_index: Optional[int], filter_tcp: bool, filter_quic: bool, ports: Optional[List[int]],
-                      plot_total: bool, port_legends: Optional[Dict[int, str]], output_dir: str) -> None:
+                      plot_total: bool, port_legends: Optional[Dict[int, str]], output_dir: Optional[str] = None) -> None:
     if not os.path.exists(pcap_file):
         logging.error(f"Pcap file does not exist: {pcap_file}")
         return
+
+    # Set the output directory to the directory of the pcap file
+    output_dir = os.path.dirname(pcap_file)
 
     analyzer = PcapAnalyzer(
         pcap_file=pcap_file,
