@@ -307,7 +307,7 @@ class QlogPlotter:
                                  MB,
                                  '.', markersize=1, label="cumulative data size")
         ax[0].legend(handles=[line_0_off, line_0_re, line_0_pkt],
-                     markerscale=10, fontsize=font_size)
+                     markerscale=8, fontsize=font_size)
         ax[0].set_ylabel('offset [MB]', fontsize=font_size)
 
         pacing_rate_data = self.df_metrics[self.df_metrics['key']
@@ -316,8 +316,12 @@ class QlogPlotter:
                                     pacing_rate_data['value'] / MB,
                                     '.', markersize=1, label="pacing_rate")
         ax[1].legend(handles=[line_1_pacing],
-                     markerscale=10, fontsize=font_size)
+                     markerscale=8, fontsize=font_size)
         ax[1].set_ylabel("pacing rate [Mbps]", fontsize=font_size)
+        
+       # Dynamically adjust y-axis limit based on data
+        # max_value = (pacing_rate_data['value'] / MB).max()  # Calculate the max value from the pacing_rate_data
+        # ax[1].set_ylim(0, min(40, max_value))  # Set y-axis limit: capped at 60
 
         cwnd_data = self.df_metrics[self.df_metrics['key'].isin(
             ['cwnd', 'congestion_window'])]
@@ -330,7 +334,7 @@ class QlogPlotter:
                                     bytes_in_flight_data['value'] / MB,
                                     '.', markersize=1, label="bytes_in_flight")
         ax[2].legend(handles=[line_2_cwnd, line_2_flight],
-                     markerscale=10, fontsize=font_size)
+                     markerscale=8, fontsize=font_size)
         ax[2].set_ylabel("metrics [MB]", fontsize=font_size)
 
         smoothed_rtt_data = self.df_metrics[self.df_metrics['key']
@@ -348,8 +352,9 @@ class QlogPlotter:
                                     min_rtt_data['value'] / 1e3,
                                     '.', markersize=1, label="min_rtt")
         ax[3].legend(handles=[line_3_smoothedrtt, line_3_latestrtt, line_3_minrtt],
-                     markerscale=10, fontsize=font_size)
+                     markerscale=8, fontsize=font_size)
         ax[3].set_ylabel("RTT [ms]", fontsize=font_size)
+        # ax[3].set_ylim(500, 1200)
 
         line_4_throughput, = ax[4].plot(self.data_rate_df['start_interval'],
                                         # Convert bits to megabits
@@ -360,9 +365,10 @@ class QlogPlotter:
                                      self.data_rate_df['goodput'] / MB,
                                      '--', markersize=1, label="goodput")
         ax[4].legend(handles=[line_4_throughput, line_4_goodput],
-                     markerscale=10, fontsize=font_size)
+                     markerscale=8, fontsize=font_size)
         ax[4].set_ylabel("data rate [Mbps]", fontsize=font_size)
         ax[4].set_xlabel("Time [s]", fontsize=font_size)
+        # ax[4].set_ylim(0, 25)
         fig.align_ylabels(ax[:])
 
         fig.suptitle(
@@ -372,6 +378,7 @@ class QlogPlotter:
 
     def save_figures(self, fig):
         plt.savefig(f"{self.qlog_file}.pdf")
+        plt.savefig(f"{self.qlog_file}.svg")
         plt.savefig(f"{self.qlog_file}.png", dpi=600)
 
 
