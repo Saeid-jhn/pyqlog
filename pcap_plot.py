@@ -112,7 +112,7 @@ class ThroughputCalculator:
                 columns={'Throughput': 'TotalThroughput'}, inplace=True)
 
             # Consider only Destination Ports to avoid double counting
-            port_df = df[['Time_Bin', 'DstPort', 'Length']].rename(columns={'DstPort': 'Port'})
+            port_df = df[['Time_Bin', 'SrcPort', 'Length']].rename(columns={'SrcPort': 'Port'})
 
 
             # If ports are specified, filter only those ports for calculation
@@ -182,12 +182,14 @@ class Plotter:
 
             save_path_png = f"{self.base_name}.data_rate.png"
             save_path_pdf = f"{self.base_name}.data_rate.pdf"
+            save_path_svg = f"{self.base_name}.data_rate.svg"
 
             plt.savefig(save_path_png)
             plt.savefig(save_path_pdf)
+            plt.savefig(save_path_svg)
             plt.close()
             logging.info(
-                f"Throughput plot saved to {save_path_png} and {save_path_pdf}")
+                f"Throughput plot saved to {save_path_png}, {save_path_pdf} and {save_path_svg}")
         except Exception as e:
             logging.error(f"Error plotting throughput. Exception: {e}")
 
@@ -227,12 +229,14 @@ class Plotter:
 
             save_path_seq_png = f"{self.base_name}.seq.png"
             save_path_seq_pdf = f"{self.base_name}.seq.pdf"
+            save_path_seq_svg = f"{self.base_name}.seq.svg"
 
             plt.savefig(save_path_seq_png)
             plt.savefig(save_path_seq_pdf)
+            plt.savefig(save_path_seq_svg)
             plt.close()
             logging.info(
-                f"Sequence plot saved to {save_path_seq_png} and {save_path_seq_pdf}")
+                f"Sequence plot saved to {save_path_seq_png}, {save_path_seq_pdf}, and {save_path_seq_svg}")
         except Exception as e:
             logging.error(
                 f"Error plotting TCP sequence numbers. Exception: {e}")
