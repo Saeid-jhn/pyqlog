@@ -16,6 +16,7 @@ from typing import List, Tuple, Union
 
 import matplotlib.pyplot as plt
 from matplotlib.ticker import EngFormatter
+import numpy as np
 import pandas as pd
 import seaborn as sns
 
@@ -204,7 +205,20 @@ class SQlogFileParser(BaseQlogFileParser):
 
 
 class QlogDataProcessor:
-    def __init__(self, df_packets: pd.DataFrame, df_metrics: pd.DataFrame, df_offsets: pd.DataFrame, df_datagram: pd.DataFrame, time_interval: str, rolling_window: str):
+    """
+    Processes packet, offset, and datagram DataFrames to compute
+    throughput and goodput over fixed intervals using NumPy binning.
+    """
+
+    def __init__(
+        self,
+        df_packets: pd.DataFrame,
+        df_metrics: pd.DataFrame,
+        df_offsets: pd.DataFrame,
+        df_datagram: pd.DataFrame,
+        time_interval: str,
+        rolling_window: str  # not used in this implementation
+    ):
         self.df_packets = df_packets
         self.df_metrics = df_metrics
         self.df_offsets = df_offsets
@@ -214,62 +228,51 @@ class QlogDataProcessor:
         self.data_rate_df = pd.DataFrame()
 
     def calculate_throughput_and_goodput(self):
-        try:
-            # Convert time to datetime
-            self.df_datagram['datetime'] = pd.to_datetime(
-                self.df_datagram['time'], unit='us')
-            self.df_offsets['datetime'] = pd.to_datetime(
-                self.df_offsets['time'], unit='us')
+        """
+        Calculate throughput and goodput using NumPy histogram binning
+        for each fixed time interval defined by self.time_interval.
+        """
+        # Convert microsecond timestamps to seconds
+        times_dg = self.df_datagram['time'].values.astype(float) / 1e6
+        bytes_dg = self.df_datagram['length'].values.astype(float)
 
-            # Set datetime as index
-            self.df_datagram.set_index('datetime', inplace=True)
-            self.df_offsets.set_index('datetime', inplace=True)
+        # Filter non-duplicate offsets for goodput
+        mask = (~self.df_offsets['duplicate']).values
+        times_off = self.df_offsets['time'].values.astype(float)[mask] / 1e6
+        bytes_off = self.df_offsets['length'].values.astype(float)[mask]
 
-            # Calculate rolling sum for throughput over the specified rolling window
-            self.df_datagram['throughput'] = self.df_datagram['length'].rolling(
-                self.rolling_window).sum().fillna(0).apply(self.byte_per_sec_to_bits_per_sec)
+        # Define bin edges based on global time range
+        if times_dg.size or times_off.size:
+            start = min(times_dg.min() if times_dg.size else float('inf'),
+                        times_off.min() if times_off.size else float('inf'))
+            end = max(times_dg.max() if times_dg.size else float('-inf'),
+                      times_off.max() if times_off.size else float('-inf'))
+        else:
+            # No data
+            self.data_rate_df = pd.DataFrame(columns=[
+                'start_interval (s)', 'end_interval (s)',
+                'throughput (bps)', 'goodput (bps)'
+            ])
+            return
 
-            # Calculate rolling sum for goodput over the specified rolling window, considering non-duplicate offsets
-            df_goodput_non_dup = self.df_offsets[self.df_offsets['duplicate'] == False].copy(
-            )
-            df_goodput_non_dup.loc[:, 'goodput'] = df_goodput_non_dup['length'].rolling(
-                self.rolling_window).sum().fillna(0).apply(self.byte_per_sec_to_bits_per_sec)
+        interval_sec = pd.to_timedelta(self.time_interval).total_seconds()
+        bins = np.arange(start, end + interval_sec, interval_sec)
 
-            # Adjust the rolling sum to maintain the correct data rate
-            interval_ratio = pd.Timedelta('1000ms').total_seconds(
-            ) / pd.Timedelta(self.rolling_window).total_seconds()
-            self.df_datagram['throughput'] *= interval_ratio
-            df_goodput_non_dup['goodput'] *= interval_ratio
+        # Compute byte sums per interval
+        dg_sums = np.histogram(times_dg, bins=bins, weights=bytes_dg)[0]
+        off_sums = np.histogram(times_off, bins=bins, weights=bytes_off)[0]
 
-            # Resample to the specified time interval (1 second)
-            df_throughput_resampled = self.df_datagram['throughput'].resample(
-                self.time_interval).mean().fillna(0)
-            df_goodput_resampled = df_goodput_non_dup['goodput'].resample(
-                self.time_interval).mean().fillna(0)
+        # Convert to bits per second
+        throughput = dg_sums * 8 / interval_sec
+        goodput = off_sums * 8 / interval_sec
 
-            self.data_rate_df = pd.concat(
-                [df_throughput_resampled, df_goodput_resampled], axis=1).reset_index()
-            self.data_rate_df.columns = ['datetime', 'throughput', 'goodput']
-
-            # Convert datetime to seconds for plotting
-            self.data_rate_df['start_interval'] = (
-                self.data_rate_df['datetime'] - pd.Timestamp("1970-01-01")) // pd.Timedelta('1s')
-            self.data_rate_df['end_interval'] = self.data_rate_df['start_interval'] + \
-                pd.Timedelta(self.time_interval).total_seconds()
-            self.data_rate_df['end_interval'] = self.data_rate_df['end_interval'].astype(
-                int)
-            self.data_rate_df.drop(columns=['datetime'], inplace=True)
-
-            # Reorder columns
-            self.data_rate_df = self.data_rate_df[[
-                'start_interval', 'end_interval', 'throughput', 'goodput']]
-
-        except Exception as e:
-            logging.error(f"Error in calculate_throughput_and_goodput: {e}")
-
-    @staticmethod
-    def byte_per_sec_to_bits_per_sec(b_per_sec: float) -> float:
-        return b_per_sec * 8  # Convert B/s to bits per second
+        # Build the result DataFrame
+        self.data_rate_df = pd.DataFrame({
+            'start_interval (s)': bins[:-1].astype(int),
+            'end_interval (s)':   bins[1:].astype(int),
+            'throughput (bps)':   throughput,
+            'goodput (bps)':      goodput
+        })
 
 
 class QlogProcessor:
