@@ -7,7 +7,7 @@ import argparse
 import os
 
 
-def plot_all(csv_prefix: str):
+def plot_all(csv_prefix: str, formats: list):
     # Load CSVs
     df_data_rate = pd.read_csv(f"{csv_prefix}.data_rate.csv")
     df_offsets = pd.read_csv(f"{csv_prefix}.offsets.csv")
@@ -34,7 +34,6 @@ def plot_all(csv_prefix: str):
 
     fig, ax = plt.subplots(5, 1, figsize=(5, 12), sharex=False)
     csv_name = os.path.basename(csv_prefix)
-    fig.suptitle(f"Data / Offset vs. Time \n{csv_name}", fontsize=font_size)
 
     for axis in ax:
         axis.grid(True)
@@ -80,7 +79,6 @@ def plot_all(csv_prefix: str):
                              markerscale=8, fontsize=font_size)
     ax[plot_order[2]].set_ylabel("metrics [MB]", fontsize=font_size)
     ax[plot_order[2]].set_xlabel("Time [s]", fontsize=font_size)
-    ax[plot_order[2]].set_ylim(0, 50)
 
     # Plot 4: RTTs
     smoothed = df_metrics[df_metrics['key'] == 'smoothed_rtt']
@@ -95,8 +93,26 @@ def plot_all(csv_prefix: str):
     ax[plot_order[3]].legend(handles=[l1, l2, l3],
                              markerscale=8, fontsize=font_size)
     ax[plot_order[3]].set_ylabel("RTT [ms]", fontsize=font_size)
-    ax[plot_order[3]].set_ylim(500, 2500)
     ax[plot_order[3]].set_xlabel("Time [s]", fontsize=font_size)
+
+    # find the 99th‑pct maximum to avoid outleir data
+    p_sm = smoothed['value'].quantile(0.99)
+    p_la = latest['value'].quantile(0.99)
+    p_mn = min_rtt['value'].quantile(0.99)
+    rtt99 = max(p_sm, p_la, p_mn)
+
+    # now compute the absolute minimum across the three series
+    rtt_min = min(
+        smoothed['value'].min(),
+        latest['value'].min(),
+        min_rtt['value'].min()
+    )
+
+    # set your y‑limits in milliseconds with margin
+    ax[plot_order[3]].set_ylim(
+        ymin=(rtt_min * 0.9) / 1e3,
+        ymax=(rtt99 * 1.2) / 1e3
+    )
 
     # Plot 5: Throughput & Goodput
     t1 = ax[plot_order[4]].plot(
@@ -116,20 +132,28 @@ def plot_all(csv_prefix: str):
     fig.tight_layout()
     fig.subplots_adjust(top=0.92)
 
-    # Save
-    # plt.savefig(f"{csv_prefix}.pdf")
-    # plt.savefig(f"{csv_prefix}.svg")
-    plt.savefig(f"{csv_prefix}.png", dpi=600)
-    plt.show()
+    # Save in requested formats
+    for ext in formats:
+        if ext == 'png':
+            plt.savefig(f"{csv_prefix}.{ext}", dpi=900)
+        else:
+            plt.savefig(f"{csv_prefix}.{ext}")
 
 
 def main():
     parser = argparse.ArgumentParser(
         description='Plot QUIC CSV metrics in original style.')
     parser.add_argument(
-        'csv_prefix', help='Prefix of CSV files (no extension)')
+        'csv_prefix',
+        help='Prefix of CSV files (no extension)')
+    parser.add_argument(
+        '--formats', '-f',
+        nargs='+',
+        choices=['png', 'svg', 'pdf'],
+        default=['png'],
+        help='Output file formats (default: png). Warning PDF and SVG takes very long!')
     args = parser.parse_args()
-    plot_all(args.csv_prefix)
+    plot_all(args.csv_prefix, args.formats)
 
 
 if __name__ == '__main__':
