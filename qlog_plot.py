@@ -272,116 +272,6 @@ class QlogDataProcessor:
         return b_per_sec * 8  # Convert B/s to bits per second
 
 
-class QlogPlotter:
-    def __init__(self, df_packets: pd.DataFrame, df_metrics: pd.DataFrame, df_offsets: pd.DataFrame, data_rate_df: pd.DataFrame, qlog_file: str):
-        self.df_packets = df_packets
-        self.df_metrics = df_metrics
-        self.df_offsets = df_offsets
-        self.data_rate_df = data_rate_df
-        self.qlog_file = qlog_file
-
-    def plot_figures(self):
-        sns.set()
-        plt.rcParams['font.size'] = 10
-        qlog_file_name = os.path.basename(os.path.splitext(self.qlog_file)[0])
-
-        font_size = 10
-        MB = 1000**2
-        fig, ax = plt.subplots(5, 1, figsize=(4, 10), sharex=True)
-
-        for axis in ax:
-            axis.grid(True)
-
-        formatter1 = EngFormatter(places=0, sep="\N{THIN SPACE}")  # U+2009
-        ax[0].yaxis.set_major_formatter(formatter1)
-        line_0_off, = ax[0].plot(self.df_offsets[self.df_offsets['duplicate'] == False]['time'] / 1e6,
-                                 self.df_offsets[self.df_offsets['duplicate']
-                                                 == False]['offset'] / MB,
-                                 '.', markersize=1, label="offset")
-        line_0_re, = ax[0].plot(self.df_offsets[self.df_offsets['duplicate']]['time'] / 1e6,
-                                self.df_offsets[self.df_offsets['duplicate']
-                                                ]['offset'] / MB,
-                                '.', markersize=1, label="offset retransmitted")
-        line_0_pkt, = ax[0].plot(self.df_packets['time'] / 1e6,
-                                 self.df_packets['packet_size_cumsum'] /
-                                 MB,
-                                 '.', markersize=1, label="cumulative data size")
-        ax[0].legend(handles=[line_0_off, line_0_re, line_0_pkt],
-                     markerscale=8, fontsize=font_size)
-        ax[0].set_ylabel('offset [MB]', fontsize=font_size)
-
-        pacing_rate_data = self.df_metrics[self.df_metrics['key']
-                                           == "pacing_rate"]
-        line_1_pacing, = ax[1].plot(pacing_rate_data['time'] / 1e6,
-                                    pacing_rate_data['value'] / MB,
-                                    '.', markersize=1, label="pacing_rate")
-        ax[1].legend(handles=[line_1_pacing],
-                     markerscale=8, fontsize=font_size)
-        ax[1].set_ylabel("pacing rate [Mbps]", fontsize=font_size)
-        
-       # Dynamically adjust y-axis limit based on data
-        # max_value = (pacing_rate_data['value'] / MB).max()  # Calculate the max value from the pacing_rate_data
-        # ax[1].set_ylim(0, min(40, max_value))  # Set y-axis limit: capped at 60
-
-        cwnd_data = self.df_metrics[self.df_metrics['key'].isin(
-            ['cwnd', 'congestion_window'])]
-        bytes_in_flight_data = self.df_metrics[self.df_metrics['key']
-                                               == "bytes_in_flight"]
-        line_2_cwnd, = ax[2].plot(cwnd_data['time'] / 1e6,
-                                  cwnd_data['value'] / MB,
-                                  '.', markersize=1, label="cwnd")
-        line_2_flight, = ax[2].plot(bytes_in_flight_data['time'] / 1e6,
-                                    bytes_in_flight_data['value'] / MB,
-                                    '.', markersize=1, label="bytes_in_flight")
-        ax[2].legend(handles=[line_2_cwnd, line_2_flight],
-                     markerscale=8, fontsize=font_size)
-        ax[2].set_ylabel("metrics [MB]", fontsize=font_size)
-
-        smoothed_rtt_data = self.df_metrics[self.df_metrics['key']
-                                            == "smoothed_rtt"]
-        latest_rtt_data = self.df_metrics[self.df_metrics['key']
-                                          == "latest_rtt"]
-        min_rtt_data = self.df_metrics[self.df_metrics['key'] == "min_rtt"]
-        line_3_smoothedrtt, = ax[3].plot(smoothed_rtt_data['time'] / 1e6,
-                                         smoothed_rtt_data['value'] / 1e3,
-                                         '.', markersize=1, label="smoothed_rtt")
-        line_3_latestrtt, = ax[3].plot(latest_rtt_data['time'] / 1e6,
-                                       latest_rtt_data['value'] / 1e3,
-                                       '.', markersize=1, label="latest_rtt")
-        line_3_minrtt, = ax[3].plot(min_rtt_data['time'] / 1e6,
-                                    min_rtt_data['value'] / 1e3,
-                                    '.', markersize=1, label="min_rtt")
-        ax[3].legend(handles=[line_3_smoothedrtt, line_3_latestrtt, line_3_minrtt],
-                     markerscale=8, fontsize=font_size)
-        ax[3].set_ylabel("RTT [ms]", fontsize=font_size)
-        # ax[3].set_ylim(500, 1200)
-
-        line_4_throughput, = ax[4].plot(self.data_rate_df['start_interval'],
-                                        # Convert bits to megabits
-                                        self.data_rate_df['throughput'] / MB,
-                                        '-', markersize=1, label="throughput")
-        line_4_goodput, = ax[4].plot(self.data_rate_df['start_interval'],
-                                     # Convert bits to megabits
-                                     self.data_rate_df['goodput'] / MB,
-                                     '--', markersize=1, label="goodput")
-        ax[4].legend(handles=[line_4_throughput, line_4_goodput],
-                     markerscale=8, fontsize=font_size)
-        ax[4].set_ylabel("data rate [Mbps]", fontsize=font_size)
-        ax[4].set_xlabel("Time [s]", fontsize=font_size)
-        # ax[4].set_ylim(0, 25)
-        fig.align_ylabels(ax[:])
-
-        fig.suptitle(
-            f"Data / Offset vs. Time \n{qlog_file_name}", fontsize=font_size)
-        fig.tight_layout()
-        return fig
-
-    def save_figures(self, fig):
-        plt.savefig(f"{self.qlog_file}.pdf")
-        plt.savefig(f"{self.qlog_file}.svg")
-        plt.savefig(f"{self.qlog_file}.png", dpi=600)
-
-
 class QlogProcessor:
     def __init__(self, qlog_file: str, time_interval: str, rolling_window: str):
         self.qlog_file = qlog_file
@@ -408,11 +298,11 @@ class QlogProcessor:
         data_processor.calculate_throughput_and_goodput()
         self.data_rate_df = data_processor.data_rate_df
 
-        plotter = QlogPlotter(self.df_packets, self.df_metrics,
-                              self.df_offsets, self.data_rate_df, self.qlog_file)
-        fig = plotter.plot_figures()
+        # plotter = QlogPlotter(self.df_packets, self.df_metrics,
+        #                       self.df_offsets, self.data_rate_df, self.qlog_file)
+        # fig = plotter.plot_figures()
         self.save_data()
-        plotter.save_figures(fig)
+        # plotter.save_figures(fig)
 
         elapsed_time = time.time() - start_time
         return self.qlog_file, elapsed_time
