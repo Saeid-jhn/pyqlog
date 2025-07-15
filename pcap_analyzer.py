@@ -23,17 +23,21 @@ from multiprocessing import Pool, cpu_count
 from typing import Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
+import seaborn as sns
 import pandas as pd
 from matplotlib.ticker import FuncFormatter
 
 # Increase default font sizes for publication-quality
 plt.rcParams.update({
     'font.size': 12,
-    'axes.labelsize': 14,
+    'axes.labelsize': 12,
     'xtick.labelsize': 12,
     'ytick.labelsize': 12,
     'legend.fontsize': 12
 })
+# Set up Seaborn and layout
+sns.set()
+sns.set_theme(style='whitegrid')
 
 # -------------------------------------------------------------------------- #
 # Config                                                                      #
@@ -62,6 +66,7 @@ FIELDS = [
 # TShark CSV reader                                                           #
 # -------------------------------------------------------------------------- #
 
+
 def pcap_to_df(pcap: str, display_filter: str | None = None) -> pd.DataFrame:
     """Run TShark once and return a tidy DataFrame."""
     cmd = [
@@ -79,7 +84,8 @@ def pcap_to_df(pcap: str, display_filter: str | None = None) -> pd.DataFrame:
         cmd += ["-e", f]
 
     logging.debug("Running: %s", " ".join(cmd))
-    out = subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
+    out = subprocess.run(cmd, capture_output=True,
+                         text=True, check=True).stdout
     df = pd.read_csv(io.StringIO(out))
 
     df.rename(
@@ -101,7 +107,8 @@ def pcap_to_df(pcap: str, display_filter: str | None = None) -> pd.DataFrame:
 
     # Simple QUIC heuristic
     quic_mask = (df["Protocol"] == "UDP") & (
-        df[["SrcPort", "DstPort"]].isin({443, 784, 4433, 50001, 50002}).any(axis=1)
+        df[["SrcPort", "DstPort"]].isin(
+            {443, 784, 4433, 50001, 50002}).any(axis=1)
     )
     df.loc[quic_mask, "Protocol"] = "QUIC"
     return df
@@ -109,6 +116,7 @@ def pcap_to_df(pcap: str, display_filter: str | None = None) -> pd.DataFrame:
 # -------------------------------------------------------------------------- #
 # Classes                                                                     #
 # -------------------------------------------------------------------------- #
+
 
 class PcapFileProcessor:
     def __init__(
@@ -124,7 +132,8 @@ class PcapFileProcessor:
         self.quic_only = quic_only
 
     def read(self,) -> Tuple[
-        List[Tuple[float, int, str, int, int, Optional[bool], Optional[bool], Optional[bool]]],
+        List[Tuple[float, int, str, int, int,
+                   Optional[bool], Optional[bool], Optional[bool]]],
         List[Tuple[float, int, str, str, int, int]],
     ]:
         if self.tcp_only:
@@ -148,6 +157,7 @@ class PcapFileProcessor:
         ].itertuples(index=False, name=None)
         return list(packets), list(seq)
 
+
 class ThroughputCalculator:
     def __init__(self, interval: float, ports: Optional[List[int]], tcp_error: bool):
         self.interval = interval
@@ -168,13 +178,14 @@ class ThroughputCalculator:
 
         total = (
             df.groupby("Time_Bin")["Length"]
-              .sum()
-              .mul(8 / self.interval)
-              .rename("TotalThroughput")
-              .reset_index()
+            .sum()
+            .mul(8 / self.interval)
+            .rename("TotalThroughput")
+            .reset_index()
         )
 
-        port_df = df[["Time_Bin", "SrcPort", "Length"]].rename(columns={"SrcPort": "Port"})
+        port_df = df[["Time_Bin", "SrcPort", "Length"]].rename(
+            columns={"SrcPort": "Port"})
         if self.ports:
             port_df = port_df[port_df["Port"].isin(self.ports)]
         port = (
@@ -203,6 +214,7 @@ class ThroughputCalculator:
 
         return result
 
+
 class Plotter:
     def __init__(self, base_name: str, plot_total: bool, legends: Dict[int, str], interval: float, formats: List[str]):
         self.base_name = f"{base_name}.pcap"
@@ -220,16 +232,19 @@ class Plotter:
         for port in ports:
             sub = df[df["Port"] == port]
             if not sub.empty:
-                ax1.plot(sub["Time_Bin"], sub["Throughput"], label=self.legends.get(port, f"Port {port}"))
+                ax1.plot(sub["Time_Bin"], sub["Throughput"],
+                         label=self.legends.get(port, f"Port {port}"))
         if self.plot_total:
             tot = df[["Time_Bin", "TotalThroughput"]].drop_duplicates()
-            ax1.plot(tot["Time_Bin"], tot["TotalThroughput"], "--", label="Total")
+            ax1.plot(tot["Time_Bin"], tot["TotalThroughput"],
+                     "--", label="Total")
 
         ax1.set_ylabel("Throughput (Mbps)")
         ax1.set_xlabel("Time (s)")
 
         if "Errors" in df.columns and df["Errors"].sum() > 0:
-            max_tp = df["TotalThroughput"].max() if "TotalThroughput" in df.columns else df["Throughput"].max()
+            max_tp = df["TotalThroughput"].max(
+            ) if "TotalThroughput" in df.columns else df["Throughput"].max()
             max_err = df["Errors"].max()
             scale = (max_tp / max_err) * 0.2 if max_err and max_tp else 1
             err = df[["Time_Bin", "Errors"]].drop_duplicates()
@@ -242,7 +257,7 @@ class Plotter:
 
         # save outputs per requested formats
         if "png" in self.formats:
-            fig.savefig(f"{self.base_name}.data_rate.png")
+            fig.savefig(f"{self.base_name}.data_rate.png", dpi=900)
         if "svg" in self.formats:
             fig.savefig(f"{self.base_name}.data_rate.svg")
         if "pdf" in self.formats:
@@ -252,16 +267,18 @@ class Plotter:
     def sequence(self, seq: List[Tuple[float, int, str, str, int, int]], ports: List[int]) -> None:
         if not seq:
             return
-        df = pd.DataFrame(seq, columns=["Timestamp","SequenceNumber","SrcIP","DstIP","SrcPort","DstPort"])\
+        df = pd.DataFrame(seq, columns=["Timestamp", "SequenceNumber", "SrcIP", "DstIP", "SrcPort", "DstPort"])\
 
         plt.figure(figsize=(12, 6))
         if ports:
             for port in ports:
                 sub = df[df["SrcPort"] == port]
                 if not sub.empty:
-                    plt.scatter(sub["Timestamp"], sub["SequenceNumber"], s=5, label=self.legends.get(port, f"Port {port}"))
+                    plt.scatter(sub["Timestamp"], sub["SequenceNumber"],
+                                s=5, label=self.legends.get(port, f"Port {port}"))
         else:
-            plt.scatter(df["Timestamp"], df["SequenceNumber"], s=5, label="TCP Sequence")
+            plt.scatter(df["Timestamp"], df["SequenceNumber"],
+                        s=5, label="TCP Sequence")
 
         plt.xlabel("Time (s)", fontsize=14)
         plt.ylabel("Sequence Number", fontsize=14)
@@ -278,6 +295,7 @@ class Plotter:
             plt.savefig(f"{self.base_name}.seq.pdf")
         plt.close()
 
+
 class PcapAnalyzer:
     def __init__(self, pcap: str, interval: float, stream_index: Optional[int], tcp_only: bool, quic_only: bool,
                  ports: Optional[List[int]], total: bool, legends: Dict[int, str], out_dir: Optional[str],
@@ -285,8 +303,10 @@ class PcapAnalyzer:
         if out_dir is None:
             out_dir = os.path.dirname(pcap)
         os.makedirs(out_dir, exist_ok=True)
-        base = os.path.join(out_dir, os.path.splitext(os.path.basename(pcap))[0])
-        self.processor = PcapFileProcessor(pcap, stream_index, tcp_only, quic_only)
+        base = os.path.join(out_dir, os.path.splitext(
+            os.path.basename(pcap))[0])
+        self.processor = PcapFileProcessor(
+            pcap, stream_index, tcp_only, quic_only)
         self.calc = ThroughputCalculator(interval, ports, tcp_error)
         self.plot = Plotter(base, total, legends, interval, formats)
         self.ports = ports or []
@@ -308,7 +328,7 @@ class PcapAnalyzer:
 
         if self.do_seq and seq:
             if "csv" in self.formats:
-                pd.DataFrame(seq, columns=["Timestamp","SequenceNumber","SrcIP","DstIP","SrcPort","DstPort"]).to_csv(
+                pd.DataFrame(seq, columns=["Timestamp", "SequenceNumber", "SrcIP", "DstIP", "SrcPort", "DstPort"]).to_csv(
                     f"{self.plot.base_name}.seq.csv", index=False)
             self.plot.sequence(seq, self.ports)
 
@@ -318,25 +338,35 @@ class PcapAnalyzer:
 # CLI                                                                         #
 # -------------------------------------------------------------------------- #
 
+
 def wrapper(pcap, interval, stream, tcp, quic, ports, total, legends, out_dir, do_seq, tcp_error, formats):
     if not os.path.exists(pcap):
         logging.error("File not found: %s", pcap)
         return
-    PcapAnalyzer(pcap, interval, stream, tcp, quic, ports, total, legends, out_dir, do_seq, tcp_error, formats).run()
+    PcapAnalyzer(pcap, interval, stream, tcp, quic, ports, total,
+                 legends, out_dir, do_seq, tcp_error, formats).run()
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Comprehensive pcap inspector")
+    parser = argparse.ArgumentParser(
+        description="Comprehensive pcap inspector")
     parser.add_argument("pcap_files", nargs='+', help="pcap file(s)")
-    parser.add_argument("--interval", type=float, default=1.0, help="bin width (s)")
+    parser.add_argument("--interval", type=float,
+                        default=1.0, help="bin width (s)")
     parser.add_argument("--stream-index", type=int, help="filter a TCP stream")
     parser.add_argument("--tcp", action="store_true", help="analyse only TCP")
-    parser.add_argument("--quic", action="store_true", help="analyse only QUIC")
-    parser.add_argument("--port", type=int, nargs='+', help="ports to plot separately")
-    parser.add_argument("--port-legend", type=str, nargs='+', help="custom legend text per port")
-    parser.add_argument("--total", action="store_true", help="show total throughput line")
-    parser.add_argument("--sequence", action="store_true", help="draw TCP seq scatter")
-    parser.add_argument("--tcp-error", action="store_true", help="extract TCP-analysis flags and plot error counts")
+    parser.add_argument("--quic", action="store_true",
+                        help="analyse only QUIC")
+    parser.add_argument("--port", type=int, nargs='+',
+                        help="ports to plot separately")
+    parser.add_argument("--port-legend", type=str, nargs='+',
+                        help="custom legend text per port")
+    parser.add_argument("--total", action="store_true",
+                        help="show total throughput line")
+    parser.add_argument("--sequence", action="store_true",
+                        help="draw TCP seq scatter")
+    parser.add_argument("--tcp-error", action="store_true",
+                        help="extract TCP-analysis flags and plot error counts")
     parser.add_argument(
         "--formats",
         nargs='+',
@@ -344,7 +374,8 @@ def main() -> None:
         default=['png'],
         help="output formats to generate (default: png only)",
     )
-    parser.add_argument("--output-dir", default=None, help="folder for output (default: beside pcap)")
+    parser.add_argument("--output-dir", default=None,
+                        help="folder for output (default: beside pcap)")
     args = parser.parse_args()
 
     legends = (
@@ -352,7 +383,8 @@ def main() -> None:
         if args.port_legend else {p: f"Port {p}" for p in args.port or []}
     )
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s - %(levelname)s - %(message)s")
     with Pool(cpu_count()) as pool:
         pool.starmap(
             wrapper,
@@ -371,6 +403,7 @@ def main() -> None:
                 args.formats,
             ) for pcap in args.pcap_files]
         )
+
 
 if __name__ == "__main__":
     main()
