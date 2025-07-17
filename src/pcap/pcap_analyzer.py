@@ -105,12 +105,6 @@ def pcap_to_df(pcap: str, display_filter: str | None = None) -> pd.DataFrame:
 
     df["Protocol"] = df["ip.proto"].map({6: "TCP", 17: "UDP"}).fillna("Other")
 
-    # Simple QUIC heuristic
-    quic_mask = (df["Protocol"] == "UDP") & (
-        df[["SrcPort", "DstPort"]].isin(
-            {443, 784, 4433, 50001, 50002}).any(axis=1)
-    )
-    df.loc[quic_mask, "Protocol"] = "QUIC"
     return df
 
 # -------------------------------------------------------------------------- #
