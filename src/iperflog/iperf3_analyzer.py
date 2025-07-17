@@ -1,104 +1,186 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+"""
+iperf_log_processor.py – convert iperf3 JSON-line logs to CSV.
+
+Usage:
+    python iperf_log_processor.py [-v|-vv] <log1> [log2 ...]
+"""
+
 import argparse
-import json
 import csv
-import os
+import json
+import logging
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any, ClassVar, Dict, List, Optional, Sequence
+
+# --------------------------------------------------------------------------- #
+# Data model
+# --------------------------------------------------------------------------- #
 
 
-def process_file(input_file):
-    # Mandatory fields in desired order
-    fieldnames = ['start time (sec)', 'end time (sec)', 'goodput (bits/sec)']
-    # Optional fields in desired order
-    optional_fields_order = [
-        'Retransmissions', 'cwnd (K)', 'RTT (microsecond)', 'RTT_var (microsecond)']
-    # Keep track of which optional fields are present
-    optional_fields_present = set()
-    # List to store data rows
-    data_rows = []
+@dataclass(slots=True)
+class IntervalRow:
+    """One iperf3 *interval* event."""
 
-    with open(input_file, 'r') as log_file:
-        for line in log_file:
-            line = line.strip()
-            if not line:
-                continue  # Skip empty lines
-            try:
-                data = json.loads(line)
-            except json.JSONDecodeError:
-                continue  # Skip lines that are not JSON
+    start_time_sec: float
+    end_time_sec:   float
+    goodput_bps:    int
+    retransmissions: Optional[int] = None
+    cwnd_k:          Optional[float] = None
+    rtt_us:          Optional[int] = None
+    rttvar_us:       Optional[int] = None
 
-            if data.get('event') == 'interval':
-                interval_data = data['data']
-                stream = interval_data['streams'][0]
+    _FIELD_MAP: ClassVar[Dict[str, str]] = {
+        "start time (sec)":     "start_time_sec",
+        "end time (sec)":       "end_time_sec",
+        "goodput (bits/sec)":   "goodput_bps",
+        "Retransmissions":      "retransmissions",
+        "cwnd (K)":             "cwnd_k",
+        "RTT (microsecond)":    "rtt_us",
+        "RTT_var (microsecond)": "rttvar_us",
+    }
 
-                # Initialize a dictionary for the current row
-                row = {}
-
-                # Mandatory fields with one decimal place
-                start_time = round(stream.get('start', 0), 1)
-                end_time = round(stream.get('end', 0), 1)
-                row['start time (sec)'] = start_time
-                row['end time (sec)'] = end_time
-                row['goodput (bits/sec)'] = stream.get('bits_per_second', 0)
-
-                # Optional fields
-                if 'retransmits' in stream:
-                    row['Retransmissions'] = stream['retransmits']
-                    optional_fields_present.add('Retransmissions')
-                if 'snd_cwnd' in stream:
-                    row['cwnd (K)'] = stream['snd_cwnd'] / \
-                        1000  # Convert to Kilobytes
-                    optional_fields_present.add('cwnd (K)')
-                if 'rtt' in stream:
-                    row['RTT (microsecond)'] = stream['rtt']
-                    optional_fields_present.add('RTT (microsecond)')
-                if 'rttvar' in stream:
-                    row['RTT_var (microsecond)'] = stream['rttvar']
-                    optional_fields_present.add('RTT_var (microsecond)')
-
-                # Append the row to the data list
-                data_rows.append(row)
-
-    # Check if the last row's interval is less than 1 second
-    if data_rows:
-        last_row = data_rows[-1]
-        interval_duration = last_row['end time (sec)'] - \
-            last_row['start time (sec)']
-        if interval_duration < 1:
-            # Remove the last row from data_rows
-            print(
-                f"Ignoring last row with interval duration {interval_duration} seconds (less than 1 second).")
-            data_rows.pop()
-
-    # Build the final fieldnames list, including only present optional fields in the desired order
-    for field in optional_fields_order:
-        if field in optional_fields_present:
-            fieldnames.append(field)
-
-    # Generate output file name
-    output_file = f"{input_file}.csv"
-
-    # Write data to CSV
-    with open(output_file, 'w', newline='') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in data_rows:
-            writer.writerow(row)
+    def to_csv_row(self, columns: Sequence[str]) -> Dict[str, Any]:
+        """Return a dict restricted to *columns* order."""
+        raw = asdict(self)
+        return {col: raw[self._FIELD_MAP[col]] for col in columns if raw[self._FIELD_MAP[col]] is not None}
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description='Extract data from iperf3 log files and save to CSV.')
-    parser.add_argument('log_files', nargs='+',
-                        help='One or more iperf3 log files to process.')
-    args = parser.parse_args()
+# --------------------------------------------------------------------------- #
+# Processor
+# --------------------------------------------------------------------------- #
 
-    for input_file in args.log_files:
-        if os.path.isfile(input_file):
-            print(f'Processing file: {input_file}')
-            process_file(input_file)
-            print(f'CSV file saved as: {input_file}.csv\n')
-        else:
-            print(f'File not found: {input_file}\n')
+class IperfLogProcessor:
+    """Parse one iperf3 logfile and write its CSV counterpart."""
+
+    _OPTIONAL_ORDER: ClassVar[List[str]] = [
+        "Retransmissions",
+        "cwnd (K)",
+        "RTT (microsecond)",
+        "RTT_var (microsecond)",
+    ]
+
+    def __init__(self, path: Path) -> None:
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        self.path = path
+        self.logger = logging.getLogger(path.name)
+
+    # public -----------------------------------------------------------------
+
+    def run(self) -> Path:
+        rows = self._parse()
+        rows = self._trim_tail(rows)
+        csv_path = self._write_csv(rows)
+        self.logger.info("Saved %s", csv_path)
+        return csv_path
+
+    # internals ---------------------------------------------------------------
+
+    def _parse(self) -> List[IntervalRow]:
+        rows: List[IntervalRow] = []
+        with self.path.open(encoding="utf-8") as fh:
+            for line_no, line in enumerate(fh, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    self.logger.debug("Line %d: invalid JSON", line_no)
+                    continue
+                if rec.get("event") != "interval":
+                    continue
+
+                try:
+                    st = rec["data"]["streams"][0]
+                except (KeyError, IndexError):
+                    self.logger.debug(
+                        "Line %d: malformed interval record", line_no)
+                    continue
+
+                rows.append(
+                    IntervalRow(
+                        start_time_sec=round(st.get("start", 0.0), 1),
+                        end_time_sec=round(st.get("end",   0.0), 1),
+                        goodput_bps=int(st.get("bits_per_second", 0)),
+                        retransmissions=st.get("retransmits"),
+                        cwnd_k=st.get("snd_cwnd", 0) /
+                        1000 if "snd_cwnd" in st else None,
+                        rtt_us=st.get("rtt"),
+                        rttvar_us=st.get("rttvar"),
+                    )
+                )
+        self.logger.info("Parsed %d rows", len(rows))
+        return rows
+
+    def _trim_tail(self, rows: List[IntervalRow]) -> List[IntervalRow]:
+        if rows and rows[-1].end_time_sec - rows[-1].start_time_sec < 1.0:
+            self.logger.info("Dropping sub-second tail row")
+            rows.pop()
+        return rows
+
+    def _write_csv(self, rows: List[IntervalRow]) -> Path:
+        optional_present = {
+            "Retransmissions" if any(
+                r.retransmissions is not None for r in rows) else None,
+            "cwnd (K)" if any(r.cwnd_k is not None for r in rows) else None,
+            "RTT (microsecond)" if any(
+                r.rtt_us is not None for r in rows) else None,
+            "RTT_var (microsecond)"if any(
+                r.rttvar_us is not None for r in rows) else None,
+        } - {None}
+
+        columns = [
+            "start time (sec)",
+            "end time (sec)",
+            "goodput (bits/sec)",
+            *[f for f in self._OPTIONAL_ORDER if f in optional_present],
+        ]
+
+        csv_path = self.path.with_suffix(self.path.suffix + ".csv")
+        with csv_path.open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=columns)
+            writer.writeheader()
+            for r in rows:
+                writer.writerow(r.to_csv_row(columns))
+
+        return csv_path
 
 
-if __name__ == '__main__':
+# --------------------------------------------------------------------------- #
+# CLI
+# --------------------------------------------------------------------------- #
+
+def _configure_logging(verbosity: int) -> None:
+    level = logging.WARNING - min(verbosity, 2) * 10  # 0→WARN, 1→INFO, 2→DEBUG
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s | %(levelname)-8s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+
+def main(argv: Optional[Sequence[str]] = None) -> None:
+    p = argparse.ArgumentParser(
+        description="Convert iperf3 JSON-line logs to CSV.")
+    p.add_argument("log_files", nargs="+", metavar="LOG",
+                   help="iperf3 log files")
+    p.add_argument("-v", action="count", default=0,
+                   help="-v / -vv for INFO / DEBUG")
+    args = p.parse_args(argv)
+
+    _configure_logging(args.v)
+
+    for fname in args.log_files:
+        try:
+            IperfLogProcessor(Path(fname)).run()
+        except Exception as err:  # noqa: BLE001
+            logging.error("%s: %s", fname, err)
+
+
+if __name__ == "__main__":
     main()

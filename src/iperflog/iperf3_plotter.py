@@ -1,160 +1,176 @@
+#!/usr/bin/env python3
+"""
+csv_plotter.py – plot qlog‑derived CSVs (goodput, retrans, cwnd, RTT).
+
+Default: PNG @ 600 dpi.
+Extra formats: pdf / svg with --formats.
+"""
+from __future__ import annotations
+
 import argparse
-import pandas as pd
+import logging
+from pathlib import Path
+from typing import Final, Optional, Sequence, Tuple
+
 import matplotlib.pyplot as plt
-import seaborn as sns
-import os
-from matplotlib.patches import Patch
 import numpy as np
+import pandas as pd
+import seaborn as sns
+from matplotlib.patches import Patch
+
+# --- style -----------------------------------------------------------------
+plt.rcParams.update(
+    {"font.size": 12, "axes.labelsize": 12, "xtick.labelsize": 12,
+     "ytick.labelsize": 12, "legend.fontsize": 12}
+)
+sns.set(style="whitegrid")
+
+# --- constants -------------------------------------------------------------
+PNG_DPI: Final[int] = 600
+DEFAULT_FMT: Final[Tuple[str, ...]] = ("png",)
+VALID_FMT: Final[set[str]] = {"png", "pdf", "svg"}
+
+COLS = {
+    "time": "start time (sec)",
+    "goodput": "goodput (bits/sec)",
+    "retrans": "Retransmissions",
+    "cwnd": "cwnd (K)",
+    "rtt_us": "RTT (microsecond)",
+    "rtt_ms": "RTT (ms)",
+}
 
 
-def plot_csv_file(file_path, add_title=False):
-    # Use Seaborn's default theme
-    sns.set_theme()  # Using default Seaborn style
+# --- plotter ---------------------------------------------------------------
+class CSVPlotter:
+    _AX_STEP: Final[int] = 60  # pts between extra y‑axes
 
-    # Read the CSV file
-    df = pd.read_csv(file_path)
+    def __init__(
+        self,
+        csv_path: Path,
+        *,
+        title: bool = False,
+        out_fmt: Tuple[str, ...] = DEFAULT_FMT,
+    ):
+        self.p = csv_path
+        self.title = title
+        self.fmts = tuple(f for f in out_fmt if f in VALID_FMT) or DEFAULT_FMT
+        self.log = logging.getLogger("CSVPlotter")
 
-    # Convert RTT from microseconds to milliseconds
-    if 'RTT (microsecond)' in df.columns:
-        df['RTT (ms)'] = df['RTT (microsecond)'] / 1000.0
-        rtt_column = 'RTT (ms)'
-    else:
-        rtt_column = None
+    def plot(self) -> None:
+        df = pd.read_csv(self.p)
+        if COLS["rtt_us"] in df and COLS["rtt_ms"] not in df:
+            df[COLS["rtt_ms"]] = df[COLS["rtt_us"]] / 1_000.0
 
-    # Extract base name and directory
-    base_name = os.path.splitext(os.path.basename(file_path))[0]
-    dir_name = os.path.dirname(file_path)
+        fig, ax1 = plt.subplots(figsize=(25, 6))
+        if self.title:
+            ax1.set_title(self.p.stem)
 
-    # Create a figure and primary axis for the main plot
-    fig, ax1 = plt.subplots(figsize=(25, 6))
+        # goodput
+        sns.lineplot(x=COLS["time"], y=COLS["goodput"], data=df,
+                     ax=ax1, color="tab:blue", label="Goodput")
+        ax1.set_xlabel("Time (sec)")
+        ax1.set_ylabel("Goodput (bits/sec)", color="tab:blue")
+        ax1.tick_params(axis="y", labelcolor="tab:blue")
 
-    # Plot Goodput on the primary y-axis
-    sns.lineplot(
-        x='start time (sec)', y='goodput (bits/sec)', data=df,
-        ax=ax1, color='tab:blue', label='Goodput'
+        lines, labels = ax1.get_legend_handles_labels()
+        if ax1.get_legend():
+            ax1.get_legend().remove()
+
+        off = self._AX_STEP
+
+        # retrans
+        if COLS["retrans"] in df:
+            ax2 = ax1.twinx()
+            ax2.spines["right"].set_position(("outward", off))
+            sns.barplot(x=COLS["time"], y=COLS["retrans"], data=df,
+                        ax=ax2, color="tab:red", alpha=0.3)
+            ax2.set_ylabel("Retransmissions", color="tab:red")
+            ax2.tick_params(axis="y", labelcolor="tab:red")
+            ax2.grid(False)
+            lines.append(Patch(facecolor="tab:red",
+                         alpha=0.3, label="Retransmissions"))
+            labels.append("Retransmissions")
+            off += self._AX_STEP
+
+        # cwnd
+        if COLS["cwnd"] in df:
+            ax3 = ax1.twinx()
+            ax3.spines["right"].set_position(("outward", off))
+            sns.lineplot(x=COLS["time"], y=COLS["cwnd"], data=df,
+                         ax=ax3, color="tab:green", label="cwnd (K)")
+            ax3.set_ylabel("cwnd (K)", color="tab:green")
+            ax3.tick_params(axis="y", labelcolor="tab:green")
+            ax3.grid(False)
+            hl, ll = ax3.get_legend_handles_labels()
+            lines += hl
+            labels += ll
+            if ax3.get_legend():
+                ax3.get_legend().remove()
+            off += self._AX_STEP
+
+        # rtt
+        if COLS["rtt_ms"] in df:
+            ax4 = ax1.twinx()
+            ax4.spines["right"].set_position(("outward", off))
+            sns.lineplot(x=COLS["time"], y=COLS["rtt_ms"], data=df,
+                         ax=ax4, color="tab:purple", linestyle="--", label="RTT (ms)")
+            ax4.set_ylabel("RTT (ms)", color="tab:purple")
+            ax4.tick_params(axis="y", labelcolor="tab:purple")
+            ax4.grid(False)
+            hl, ll = ax4.get_legend_handles_labels()
+            lines += hl
+            labels += ll
+            if ax4.get_legend():
+                ax4.get_legend().remove()
+
+        # dedup legend
+        uniq = {lbl: ln for ln, lbl in zip(lines, labels)}
+        ax1.legend(uniq.values(), uniq.keys(), loc="upper left")
+
+        # x‑axis
+        if len(df):
+            ax1.set_xticks(np.arange(0, df[COLS["time"]].max() + 10, 10))
+        ax1.set_xlim(left=0)
+        ax1.grid(True, axis="x")
+
+        fig.tight_layout()
+
+        for fmt in self.fmts:
+            fig.savefig(self.p.with_suffix(
+                f".{fmt}"), dpi=PNG_DPI if fmt == "png" else None)
+        plt.close(fig)
+
+
+# --- CLI -------------------------------------------------------------------
+def _parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="Plot network metrics CSVs.")
+    p.add_argument("files", nargs="+", type=Path)
+    p.add_argument("--add-title", action="store_true")
+    p.add_argument("--formats", nargs="+", choices=sorted(VALID_FMT),
+                   metavar="FMT", help="png pdf svg (default: png)")
+    p.add_argument("-v", "--verbose", action="count", default=0,
+                   help="-v INFO, -vv DEBUG")
+    return p
+
+
+def _config_log(verb: int) -> None:
+    logging.basicConfig(
+        level=logging.INFO if verb == 0 else logging.DEBUG,
+        format="%(levelname)s %(message)s",
     )
-    ax1.set_xlabel('Time (sec)')
-    ax1.set_ylabel('Goodput (bits/sec)', color='tab:blue')
-    ax1.tick_params(axis='y', labelcolor='tab:blue')
-
-    # Set plot title if add_title is True
-    if add_title:
-        ax1.set_title(base_name)
-
-    # Initialize lists for legends
-    lines, labels = [], []
-
-    # Get handles and labels from ax1
-    handle1, label1 = ax1.get_legend_handles_labels()
-    lines.extend(handle1)
-    labels.extend(label1)
-
-    # Remove default legend from ax1
-    if ax1.get_legend():
-        ax1.get_legend().remove()
-
-    # Plot Retransmissions if available
-    if 'Retransmissions' in df.columns:
-        ax2 = ax1.twinx()
-        sns.barplot(
-            x='start time (sec)', y='Retransmissions', data=df,
-            ax=ax2, color='tab:red', alpha=0.3
-        )
-        ax2.set_ylabel('Retransmissions', color='tab:red')
-        ax2.tick_params(axis='y', labelcolor='tab:red')
-        ax2.spines['right'].set_position(('outward', 60))
-        ax2.grid(False)  # Turn off grid lines for ax2
-
-        # Create a custom legend handle for Retransmissions
-        patch = Patch(facecolor='tab:red', alpha=0.3, label='Retransmissions')
-        lines.append(patch)
-        labels.append('Retransmissions')
-
-    # Plot cwnd if available
-    if 'cwnd (K)' in df.columns:
-        ax3 = ax1.twinx()
-        ax3.spines['right'].set_position(('outward', 120))
-        sns.lineplot(
-            x='start time (sec)', y='cwnd (K)', data=df,
-            ax=ax3, color='tab:green', label='cwnd (K)'
-        )
-        ax3.set_ylabel('cwnd (K)', color='tab:green')
-        ax3.tick_params(axis='y', labelcolor='tab:green')
-        ax3.grid(False)  # Turn off grid lines for ax3
-
-        # Get handles and labels from ax3
-        handle3, label3 = ax3.get_legend_handles_labels()
-        lines.extend(handle3)
-        labels.extend(label3)
-
-        # Remove default legend from ax3
-        if ax3.get_legend():
-            ax3.get_legend().remove()
-
-    # Plot RTT if available
-    if rtt_column:
-        ax4 = ax1.twinx()
-        ax4.spines['right'].set_position(('outward', 180))
-        sns.lineplot(
-            x='start time (sec)', y=rtt_column, data=df,
-            ax=ax4, color='tab:purple', linestyle='--', label='RTT'
-        )
-        ax4.set_ylabel('RTT (ms)', color='tab:purple')
-        ax4.tick_params(axis='y', labelcolor='tab:purple')
-        ax4.grid(False)  # Turn off grid lines for ax4
-
-        # Get handles and labels from ax4
-        handle4, label4 = ax4.get_legend_handles_labels()
-        lines.extend(handle4)
-        labels.extend(label4)
-
-        # Remove default legend from ax4
-        if ax4.get_legend():
-            ax4.get_legend().remove()
-
-    # Remove duplicate labels
-    legend_dict = dict()
-    for h, l in zip(lines, labels):
-        if l not in legend_dict:
-            legend_dict[l] = h
-    labels = list(legend_dict.keys())
-    lines = list(legend_dict.values())
-
-    # Add combined legend
-    ax1.legend(lines, labels, loc='upper left')
-
-    # Adjust x-axis ticks based on 'start time (sec)'
-    min_time = df['start time (sec)'].min()
-    max_time = df['start time (sec)'].max()
-    x_ticks = np.arange(0, max_time + 10, 10)
-    ax1.set_xticks(x_ticks)
-    ax1.set_xlim(left=0)  # Ensure the x-axis starts at 0
-
-    # Enable grid lines only on the x-axis
-    ax1.grid(True, axis='x')
-
-    # Adjust layout
-    fig.tight_layout()
-
-    # Save the main plot
-    main_plot_png = os.path.join(dir_name, f"{base_name}.png")
-    main_plot_pdf = os.path.join(dir_name, f"{base_name}.pdf")
-    plt.savefig(main_plot_png)
-    plt.savefig(main_plot_pdf)
-    plt.close(fig)
+    logging.getLogger("matplotlib").setLevel(logging.ERROR)
 
 
-def main():
-    parser = argparse.ArgumentParser(description='Plot data from CSV files.')
-    parser.add_argument('files', nargs='+', help='CSV file(s) to process')
-    parser.add_argument('--add-title', action='store_true',
-                        help='Add title to the plot')
-    args = parser.parse_args()
+def main(argv: Optional[Sequence[str]] = None) -> None:
+    args = _parser().parse_args(argv)
+    _config_log(args.verbose)
+    for f in args.files:
+        try:
+            CSVPlotter(f, title=args.add_title,
+                       out_fmt=tuple(args.formats or DEFAULT_FMT)).plot()
+        except Exception:
+            logging.exception("Failed %s", f)
 
-    for file_path in args.files:
-        plot_csv_file(file_path, add_title=args.add_title)
-        print(f"Plots saved for {file_path}")
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
