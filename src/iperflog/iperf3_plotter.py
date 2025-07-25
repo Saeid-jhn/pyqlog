@@ -255,7 +255,8 @@ class CSVPlotter:
         if "cwnd" in keys and _has_data(df, _COLS["cwnd"]):
             h = sns.lineplot(
                 x=_COLS["t"], y=_COLS["cwnd"], data=df,
-                ax=ax_left, linewidth=1.5, color="tab:green", label=_LABELS["cwnd"]
+                ax=ax_left, linewidth=1.5, color="tab:green",
+                label=_LABELS["cwnd"], legend=False
             )
             handles.append(h.lines[0])
             labels.append(_LABELS["cwnd"])
@@ -267,7 +268,8 @@ class CSVPlotter:
             ax_right.spines["right"].set_position(("outward", self._AX_STEP))
             h2 = sns.lineplot(
                 x=_COLS["t"], y=_COLS["swnd"], data=df,
-                ax=ax_right, linewidth=1.5, color="tab:red", label=_LABELS["swnd"]
+                ax=ax_right, linewidth=1.5, color="tab:red",
+                label=_LABELS["swnd"], legend=False
             )
             handles.append(h2.lines[0])
             labels.append(_LABELS["swnd"])
