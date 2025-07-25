@@ -1,4 +1,29 @@
+
+#!/usr/bin/env python3
 from __future__ import annotations
+"""
+iperf_log_processor.py
+───────────────────────────────────────────────────────────────────────────────
+Convert iperf3 **JSON-L** logs to a tidy CSV – and optionally plot.
+
+ • Handles plain sender logs **or** client logs captured with
+   `iperf3 --get-server-output`, i.e. a single file containing both sender- 
+   and receiver-side intervals.
+ • Merges sender, receiver, and embedded server intervals into one CSV.
+ • Retains original interval metrics order, then appends per-test metadata.
+ • Drops the final sub-second interval.
+ 
+CSV column order:
+  start_time (s), end_time (s), rcv_goodput (bps), snd_throughput (bps),
+  retransmits, snd_cwnd (K), snd_wnd (K), rtt (us), rtt_var (us),
+  local_host, remote_host, remote_port, version, timestamp (CEST),
+  tcp_mss_default, sndbuf_actual, rcvbuf_actual,
+  test_start.protocol, test_start.bytes, test_start.reverse
+
+Usage:
+    python iperf_log_processor.py [-v|-vv] [--plot] <log1> [log2 ...]
+"""
+
 import argparse
 import csv
 import json
@@ -6,52 +31,23 @@ import logging
 import sys
 import time
 from dataclasses import dataclass, asdict
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, ClassVar, Dict, List, Optional, Sequence, Tuple
-
-#!/usr/bin/env python3
-"""
-iperf_log_processor.py
-───────────────────────────────────────────────────────────────────────────────
-Convert iperf3 **JSON‑L** (streaming) logs to a tidy CSV – and optionally plot.
-
- • Handles plain sender logs **or** client logs captured with
-   `iperf3 --get-server-output`, i.e. a single file containing *both*
-   sender‑ and receiver‑side interval records.
- • Produces one row per (start,end) interval; both throughput columns are kept:
-       rcv_goodput (bps)      – only on receiver intervals
-       snd_throughput (bps)   – on sender intervals (including embedded server intervals)
- • Adds sender TCP metrics when present: retransmits, snd_cwnd, snd_wnd, RTT …
-
-CSV column order
-────────────────
-start_time (s), end_time (s), rcv_goodput (bps), snd_throughput (bps),
-retransmits, snd_cwnd (K), snd_wnd (K), rtt (us), rtt_var (us)
-
-Usage
-─────
-    python iperf_log_processor.py [-v|-vv] [--plot] <log1> [log2 ...]
-"""
 
 
 @dataclass(slots=True)
 class IntervalRow:
-    """One row in the output CSV, keyed by (start,end)."""
     start_time_sec: float
-    end_time_sec: float
-
-    # throughput columns
+    end_time_sec:   float
     rcv_goodput_bps:    Optional[int] = None
     snd_throughput_bps: Optional[int] = None
+    retransmits:        Optional[int] = None
+    snd_cwnd_k:         Optional[float] = None
+    snd_wnd_k:          Optional[float] = None
+    rtt_us:             Optional[int] = None
+    rtt_var_us:         Optional[int] = None
 
-    # TCP metrics (sender only)
-    retransmits:  Optional[int] = None
-    snd_cwnd_k:   Optional[float] = None
-    snd_wnd_k:    Optional[float] = None
-    rtt_us:       Optional[int] = None
-    rtt_var_us:   Optional[int] = None
-
-    # column ↔︎ attribute map for CSV export
     _MAP: ClassVar[Dict[str, str]] = {
         "start_time (s)":       "start_time_sec",
         "end_time (s)":         "end_time_sec",
@@ -65,15 +61,13 @@ class IntervalRow:
     }
 
     def to_csv(self, cols: Sequence[str]) -> Dict[str, Any]:
-        """Serialize only non-None fields into CSV columns."""
         raw = asdict(self)
         return {c: raw[self._MAP[c]] for c in cols if raw[self._MAP[c]] is not None}
 
 
 class IperfLogProcessor:
-    """Convert one iperf3 JSON‑stream log to CSV (+ optional plot)."""
-
-    CSV_COLS: ClassVar[List[str]] = [
+    # original interval columns
+    INTERVAL_COLS: ClassVar[List[str]] = [
         "start_time (s)",
         "end_time (s)",
         "rcv_goodput (bps)",
@@ -84,6 +78,20 @@ class IperfLogProcessor:
         "rtt (us)",
         "rtt_var (us)",
     ]
+    # metadata columns appended after interval metrics
+    META_COLS: ClassVar[List[str]] = [
+        "local_host",
+        "remote_host",
+        "remote_port",
+        "version",
+        "timestamp (CEST)",
+        "tcp_mss_default",
+        "sndbuf_actual",
+        "rcvbuf_actual",
+        "test_start.protocol",
+        "test_start.bytes",
+        "test_start.reverse",
+    ]
 
     def __init__(self, path: Path, plot: bool = False) -> None:
         if not path.is_file():
@@ -91,9 +99,9 @@ class IperfLogProcessor:
         self.path = path
         self.plot = plot
         self.log = logging.getLogger(path.name)
+        self.metadata: Dict[str, Any] = {}
 
     def run(self) -> Path:
-        """Process the log file: parse, write CSV, and optionally plot."""
         rows = self._parse_log()
         rows = self._drop_subsecond_tail(rows)
         csv_path = self._write_csv(rows)
@@ -102,7 +110,6 @@ class IperfLogProcessor:
         return csv_path
 
     def _parse_log(self) -> List[IntervalRow]:
-        """Merge sender & receiver records (and embedded server intervals) by (start,end)."""
         rows_by_interval: Dict[Tuple[float, float], IntervalRow] = {}
 
         with self.path.open(encoding="utf-8") as fh:
@@ -116,7 +123,33 @@ class IperfLogProcessor:
                     self.log.debug("line %d: invalid JSON", ln)
                     continue
 
-                # Determine interval blocks: client or embedded server
+                # capture metadata from the first start event
+                if rec.get("event") == "start" and not self.metadata:
+                    d = rec["data"]
+                    conn = d.get("connected", [{}])[0]
+                    # convert GMT timestamp to CEST (+2h)
+                    t = datetime.strptime(
+                        d["timestamp"]["time"], "%a, %d %b %Y %H:%M:%S GMT"
+                    ).replace(tzinfo=timezone.utc).astimezone(
+                        timezone(timedelta(hours=2))
+                    )
+                    ts = t.strftime("%Y-%m-%d %H:%M:%S CEST")
+                    self.metadata = {
+                        "local_host":          conn.get("local_host"),
+                        "remote_host":         conn.get("remote_host"),
+                        "remote_port":         conn.get("remote_port"),
+                        "version":             d.get("version"),
+                        "timestamp (CEST)":    ts,
+                        "tcp_mss_default":     d.get("tcp_mss_default"),
+                        "sndbuf_actual":       d.get("sndbuf_actual"),
+                        "rcvbuf_actual":       d.get("rcvbuf_actual"),
+                        "test_start.protocol": d["test_start"].get("protocol"),
+                        "test_start.bytes":    d["test_start"].get("bytes"),
+                        "test_start.reverse":  d["test_start"].get("reverse"),
+                    }
+                    continue
+
+                # identify interval blocks: direct or embedded server
                 if rec.get("event") == "interval":
                     blocks = [rec["data"]]
                 elif rec.get("event") == "server_output_json":
@@ -127,23 +160,21 @@ class IperfLogProcessor:
                 for blk in blocks:
                     streams = blk.get("streams", [])
                     if not streams:
-                        self.log.debug("line %d: no streams in block", ln)
+                        self.log.debug("line %d: no streams", ln)
                         continue
                     st = streams[0]
 
-                    # normalize and key by start/end rounded to milliseconds
                     beg = round(st.get("start", 0.0), 3)
                     end = round(st.get("end",   0.0), 3)
                     key = (beg, end)
-                    row = rows_by_interval.setdefault(key,
-                                                      IntervalRow(beg, end))
+                    row = rows_by_interval.setdefault(
+                        key, IntervalRow(beg, end))
 
                     is_sender = st.get("sender", True)
-                    bits_per_sec = int(st.get("bits_per_second", 0))
+                    bps = int(st.get("bits_per_second", 0))
 
                     if is_sender:
-                        # fill sender throughput & TCP stats
-                        row.snd_throughput_bps = bits_per_sec
+                        row.snd_throughput_bps = bps
                         row.retransmits = st.get(
                             "retransmits") or row.retransmits
                         if "snd_cwnd" in st:
@@ -153,17 +184,15 @@ class IperfLogProcessor:
                         row.rtt_us = st.get("rtt") or row.rtt_us
                         row.rtt_var_us = st.get("rttvar") or row.rtt_var_us
                     else:
-                        # receiver goodput
-                        row.rcv_goodput_bps = bits_per_sec
+                        row.rcv_goodput_bps = bps
 
         self.log.info("parsed %d interval rows", len(rows_by_interval))
         return sorted(rows_by_interval.values(), key=lambda r: r.start_time_sec)
 
     def _drop_subsecond_tail(self, rows: List[IntervalRow]) -> List[IntervalRow]:
-        """Drop final interval if shorter than 1 second."""
         if rows and (rows[-1].end_time_sec - rows[-1].start_time_sec < 1.0):
             self.log.info(
-                "dropping final sub‑second row %s-%s",
+                "dropping final sub-second row %s–%s",
                 rows[-1].start_time_sec,
                 rows[-1].end_time_sec,
             )
@@ -171,18 +200,25 @@ class IperfLogProcessor:
         return rows
 
     def _write_csv(self, rows: List[IntervalRow]) -> Path:
-        """Write out the merged intervals to CSV."""
+        cols = self.INTERVAL_COLS + self.META_COLS
         csv_path = self.path.with_suffix(self.path.suffix + ".csv")
         with csv_path.open("w", newline="", encoding="utf-8") as fh:
-            writer = csv.DictWriter(fh, fieldnames=self.CSV_COLS)
+            writer = csv.DictWriter(fh, fieldnames=cols)
             writer.writeheader()
+            first = True
             for row in rows:
-                writer.writerow(row.to_csv(self.CSV_COLS))
+                interval = row.to_csv(self.INTERVAL_COLS)
+                # only include metadata on the first row
+                if first:
+                    record = {**interval, **self.metadata}
+                    first = False
+                else:
+                    record = interval
+                writer.writerow(record)
         self.log.info("wrote CSV → %s", csv_path)
         return csv_path
 
     def _plot(self, csv_path: Path) -> None:
-        """Plot CSV via external iperf3_plotter if installed."""
         try:
             from iperf3_plotter import plot_csv
             self.log.info("plotting %s", csv_path)
@@ -204,9 +240,8 @@ def _setup_logging(verbosity: int) -> None:
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
     ap = argparse.ArgumentParser(
-        description="Convert iperf3 JSON‑L logs to CSV."
-    )
-    ap.add_argument("log_files", nargs="+", help="iperf3 JSON‑stream files")
+        description="Convert iperf3 JSON-L logs to CSV.")
+    ap.add_argument("log_files", nargs="+", help="iperf3 JSON-stream files")
     ap.add_argument("-v", action="count", default=0,
                     help="-v/-vv for verbosity")
     ap.add_argument("--plot", action="store_true",
@@ -215,8 +250,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     _setup_logging(args.v)
     root = logging.getLogger("iperf_processor")
-
     t0 = time.perf_counter()
+
     for path_str in args.log_files:
         path = Path(path_str)
         try:
