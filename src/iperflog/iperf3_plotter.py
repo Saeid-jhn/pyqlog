@@ -6,8 +6,8 @@ csv_plotter.py – publication‑quality visualisation of qlog‑derived CSVs
 
 Metrics:
   - data_rate : receiver goodput & sender throughput (auto‑scaled units)
-  - cwnd      : CWND (left) & Send Window (right) (KB/MB/GB)
-  - rtt       : RTT ± var (left) & Retransmissions (right)
+  - cwnd      : CWND (left) & Send Window (right) (KB/MB/GB) or left if alone
+  - rtt       : RTT ± var (left) & Retransmissions (right) or left if alone
 
 Usage:
     python csv_plotter.py [--title] [--formats png pdf svg] \
@@ -131,13 +131,13 @@ class CSVPlotter:
         df = pd.read_csv(self.path)
         self.log.debug("Loaded %d rows from %s", len(df), self.path.name)
 
-        # Convert RTT µs→ms
+        # convert RTT µs→ms
         if _has_data(df, _COLS["rtt"]):
             df["rtt_ms"] = df[_COLS["rtt"]] / 1_000.0
         if _has_data(df, _COLS["rtt_var"]):
             df["rtt_var_ms"] = df[_COLS["rtt_var"]] / 1_000.0
 
-        # Mid-time & interval
+        # mid‑time & interval
         tcol, t_end = _COLS["t"], _COLS["t_end"]
         if tcol in df and t_end in df:
             df["mid_t"] = (df[tcol] + df[t_end]) / 2.0
@@ -146,7 +146,7 @@ class CSVPlotter:
             df["mid_t"] = df[tcol]
             df["interval"] = 1.0
 
-        # Assemble title text
+        # assemble title
         meta = df.iloc[0] if not df.empty else pd.Series(dtype=str)
         ts = meta.get("timestamp (CEST)", "")
         raw_bytes = float(meta.get("test_start.bytes", 0))
@@ -166,23 +166,20 @@ class CSVPlotter:
         rcv_val, rcv_unit = _auto_scale(
             rcv_raw, [(1e6, "MB"), (1e3, "KB"), (1, "B")])
         mss = int(meta.get("tcp_mss_default", 0))
-        line1 = f"Time: {ts}    File: {fsz:.2f}{funit}    iperf: {ver}"
+        line1 = f"Time: {ts}    File: {fsz:.2f}{funit}    version: {ver}"
         line2 = f"Server: {serv}:{port}    Client: {cli}    Sender: {sender}"
         line3 = f"Protocol: {proto}    SendBuf: {snd_val:.2f}{snd_unit}    RecvBuf: {rcv_val:.2f}{rcv_unit}    MSS: {mss}"
         title_text = "\n".join((line1, line2, line3))
 
-        # Determine sub‑plots
+        # choose panels
         if self.metrics is None:
-            blocks = [
-                (keys, suf)
-                for keys, suf in _FIGURES
-                if any(_has_data(df, _COLS[k]) for k in keys)
-            ]
+            blocks = [(k, s) for k, s in _FIGURES if any(
+                _has_data(df, _COLS[x]) for x in k)]
         else:
             blocks = []
             for keys, suf in _FIGURES:
                 chosen = tuple(
-                    k for k in keys if k in self.metrics and _has_data(df, _COLS[k]))
+                    x for x in keys if x in self.metrics and _has_data(df, _COLS[x]))
                 if chosen:
                     blocks.append((chosen, suf))
 
@@ -190,43 +187,43 @@ class CSVPlotter:
             self.log.info("No data to plot in %s – skipping.", self.path.name)
             return
 
-        # Create figure & axes with auto margins
+        # create figure & axes
         fig, axes = plt.subplots(
             nrows=len(blocks), ncols=1,
-            figsize=(20, 6 * len(blocks)),
+            figsize=(20, 6*len(blocks)),
             squeeze=False,
             constrained_layout=True
         )
         axes = axes.flatten()
 
-        # Draw title if requested
+        # title if requested
         if self.show_title:
             fig.suptitle(title_text, fontsize=16)
             fig.subplots_adjust(top=0.85)
 
-        # Plot each block
+        # plot each
         for ax, (keys, suf) in zip(axes, blocks):
             if suf == "data_rate":
                 self._plot_data_rate(df, ax, keys)
             elif suf == "cwnd":
                 self._plot_cwnd(df, ax, keys)
-            else:  # rtt
+            else:
                 self._plot_rtt(df, ax, keys)
 
-        # X‑axis ticks & padding
+        # x‑axis ticks & padding
         t0, t1 = df[tcol].min(), df[t_end].max(
         ) if t_end in df else df[tcol].max()
         dur = t1 - t0
         step = 1 if dur <= 10 else 10
-        ticks = np.arange(math.floor(t0), math.ceil(t1) + step, step)
+        ticks = np.arange(math.floor(t0), math.ceil(t1)+step, step)
         for ax in axes:
             ax.set_xticks(ticks)
-            ax.set_xlim(t0 - 0.01 * dur, t1 + 0.01 * dur)
+            ax.set_xlim(t0 - 0.01*dur, t1 + 0.01*dur)
             ax.set_xlabel("Time (s)", color="black")
             ax.tick_params(axis="x", colors="black")
             ax.grid(True, axis="x")
 
-        # Save outputs
+        # save
         for fmt in self.fmts:
             out = self.path.with_name(f"{self.path.stem}.plots.{fmt}")
             fig.savefig(out, dpi=PNG_DPI if fmt == "png" else None)
@@ -247,13 +244,9 @@ class CSVPlotter:
         for k, color in zip(keys, ("tab:blue", "tab:orange")):
             if _has_data(df, _COLS[k]):
                 sns.lineplot(
-                    x=df[_COLS["t"]],
-                    y=df[_COLS[k]] / scale,
-                    ax=ax,
-                    label=_LABELS[k],
-                    linewidth=1.5,
-                    color=color,
-                    legend=False,
+                    x=df[_COLS["t"]], y=df[_COLS[k]]/scale,
+                    ax=ax, label=_LABELS[k],
+                    linewidth=1.5, color=color, legend=False
                 )
         ax.set_ylabel(f"Data rate ({unit})")
         ax.legend(loc="upper left", frameon=True, framealpha=0.8)
@@ -268,60 +261,62 @@ class CSVPlotter:
         else:
             scale, unit = 1.0, "B"
         handles, labels = [], []
+        # CWND
         if "cwnd" in keys and _has_data(df, _COLS["cwnd"]):
             h = sns.lineplot(
-                x=df[_COLS["t"]],
-                y=df[_COLS["cwnd"]] / scale,
-                ax=ax_left,
-                linewidth=1.5,
-                color="tab:green",
-                label=_LABELS["cwnd"],
-                legend=False,
+                x=df[_COLS["t"]], y=df[_COLS["cwnd"]]/scale,
+                ax=ax_left, linewidth=1.5, color="tab:green",
+                label=_LABELS["cwnd"], legend=False
             )
             handles.append(h.lines[0])
             labels.append(_LABELS["cwnd"])
             ax_left.set_ylabel(f"CWND ({unit})", color="tab:green")
             ax_left.tick_params(labelcolor="tab:green")
+        # Send Window
         if "swnd" in keys and _has_data(df, _COLS["swnd"]):
-            ax2 = ax_left.twinx()
-            ax2.spines["right"].set_position(("axes", 1.0))
+            if "cwnd" in keys:
+                ax2 = ax_left.twinx()
+                ax2.spines["right"].set_position(("axes", 1.0))
+            else:
+                ax2 = ax_left
             h2 = sns.lineplot(
-                x=df[_COLS["t"]],
-                y=df[_COLS["swnd"]] / scale,
-                ax=ax2,
-                linewidth=1.5,
-                color="tab:red",
-                label=_LABELS["swnd"],
-                legend=False,
+                x=df[_COLS["t"]], y=df[_COLS["swnd"]]/scale,
+                ax=ax2, linewidth=1.5, color="tab:red",
+                label=_LABELS["swnd"], legend=False
             )
             handles.append(h2.lines[0])
             labels.append(_LABELS["swnd"])
             ax2.set_ylabel(f"Send Window ({unit})", color="tab:red")
             ax2.tick_params(labelcolor="tab:red")
-            ax2.grid(False)
+            if ax2 is not ax_left:
+                ax2.grid(False)
         ax_left.legend(handles, labels, loc="upper left",
                        frameon=True, framealpha=0.8)
 
     def _plot_rtt(self, df: pd.DataFrame, ax: Axes, keys: tuple[str, ...]) -> None:
         handles, labels = [], []
-        if "retx" in keys and _has_data(df, _COLS["retx"]):
-            ax2 = ax.twinx()
-            ax2.spines["right"].set_position(("axes", 1.0))
+        has_rtt = "rtt" in keys and _has_data(df, _COLS["rtt"])
+        has_retx = "retx" in keys and _has_data(df, _COLS["retx"])
+        # Retransmissions
+        if has_retx:
+            if has_rtt:
+                ax2 = ax.twinx()
+                ax2.spines["right"].set_position(("axes", 1.0))
+            else:
+                ax2 = ax
             ax2.bar(
-                df[_COLS["t"]],
-                df[_COLS["retx"]],
-                width=df["interval"],
-                align="edge",
-                alpha=0.3,
-                color="tab:grey",
-                zorder=1,
+                df[_COLS["t"]], df[_COLS["retx"]],
+                width=df["interval"], align="edge",
+                alpha=0.3, color="tab:grey", zorder=1
             )
             handles.append(Patch(facecolor="tab:grey", alpha=0.3))
             labels.append(_LABELS["retx"])
             ax2.set_ylabel("Retransmissions", color="tab:grey")
             ax2.tick_params(labelcolor="tab:grey")
-            ax2.grid(False)
-        if "rtt" in keys and _has_data(df, _COLS["rtt"]):
+            if ax2 is not ax:
+                ax2.grid(False)
+        # RTT ± var & line
+        if has_rtt:
             if "rtt_var" in keys and _has_data(df, _COLS["rtt_var"]):
                 lower = (df["rtt_ms"] - df["rtt_var_ms"]).clip(lower=0)
                 upper = df["rtt_ms"] + df["rtt_var_ms"]
@@ -339,8 +334,9 @@ class CSVPlotter:
             )
             handles.append(line.lines[0])
             labels.append(_LABELS["rtt"])
-        ax.set_ylabel("RTT (ms)", color="tab:purple")
-        ax.tick_params(labelcolor="tab:purple")
+            ax.set_ylabel("RTT (ms)", color="tab:purple")
+            ax.tick_params(labelcolor="tab:purple")
+        # legend
         ax.legend(handles, labels, loc="upper left",
                   frameon=True, framealpha=0.8)
 
