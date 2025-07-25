@@ -1,33 +1,24 @@
-from __future__ import annotations
-import argparse
-import logging
-from pathlib import Path
-from typing import Final, Iterable, Optional, Sequence, Set
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
-import seaborn as sns
-from matplotlib.axes import Axes
-from matplotlib.patches import Patch
-
 #!/usr/bin/env python3
 """
 csv_plotter.py – publication‑quality visualisation of qlog‑derived CSVs
 (one combined figure with up to three stacked sub‑plots), with optional
 selection of individual metrics.
 
+Data‑rate is auto‑scaled to bps, Kbps, Mbps, or Gbps based on your trace,
+and legends only show metric names (units are on the y‑axis).
+
 OUTPUT
 ------
 <stem>.plots.<fmt>
-    ├─ data_rate : receiver goodput and/or sender throughput
+    ├─ data_rate : receiver goodput and/or sender throughput (auto‑scaled units)
     ├─ cwnd      : CWND (left) and send window (right)
     └─ rtt       : RTT ± variance (left) and retransmissions (right)
 
 By default, all available metrics are plotted. Use `-m/--metrics` to restrict
-to a subset. Special case: selecting `rtt` will include both RTT and its variance.
+to a subset. Selecting `rtt` will always include both RTT and its variance.
 
-CLI EXAMPLE
------------
+CLI EXAMPLES
+------------
 # All metrics (default):
 python csv_plotter.py run.csv --formats png pdf
 
@@ -37,7 +28,19 @@ python csv_plotter.py run.csv -m receiver-goodput cwnd
 # Only RTT (with variance) + retransmits:
 python csv_plotter.py run.csv -m rtt retransmits
 """
+from __future__ import annotations
 
+import argparse
+import logging
+from pathlib import Path
+from typing import Final, Iterable, Optional, Sequence, Set
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
+from matplotlib.axes import Axes
+from matplotlib.patches import Patch
 
 # ---------------------------------------------------------------------------#
 # Global appearance                                                           #
@@ -58,18 +61,16 @@ PNG_DPI: Final[int] = 300
 DEFAULT_FMT: Final[tuple[str, ...]] = ("png",)
 VALID_FMT: Final[Set[str]] = frozenset(("png", "pdf", "svg"))
 
-# map user‑facing names to internal column keys
 _METRIC_MAP: Final[dict[str, str]] = {
-    "receiver-goodput":   "gp_rcv",
-    "sender-throughput":  "tp_snd",
-    "cwnd":               "cwnd",
-    "send-window":        "swnd",
-    "rtt":                "rtt",
-    "rtt-var":            "rtt_var",
-    "retransmits":        "retx",
+    "receiver-goodput":  "gp_rcv",
+    "sender-throughput": "tp_snd",
+    "cwnd":              "cwnd",
+    "send-window":       "swnd",
+    "rtt":               "rtt",
+    "rtt-var":           "rtt_var",
+    "retransmits":       "retx",
 }
 
-# internal → pretty labels
 _COLS: Final[dict[str, str]] = {
     "t":        "start_time (s)",
     "t_end":    "end_time (s)",
@@ -83,16 +84,15 @@ _COLS: Final[dict[str, str]] = {
 }
 
 _LABELS: Final[dict[str, str]] = {
-    "gp_rcv":   "Receiver Goodput (bps)",
-    "tp_snd":   "Sender Throughput (bps)",
-    "cwnd":     "CWND (K)",
-    "swnd":     "Send Window (K)",
-    "retx":     "Retransmissions",
-    "rtt":      "RTT (ms)",
-    "rtt_var":  "RTT ± var",
+    "gp_rcv":  "Receiver Goodput",
+    "tp_snd":  "Sender Throughput",
+    "cwnd":    "CWND (K)",
+    "swnd":    "Send Window (K)",
+    "retx":    "Retransmissions",
+    "rtt":     "RTT (ms)",
+    "rtt_var": "RTT ± var",
 }
 
-# possible subplot groups (order matters)
 _FIGURES: Final[list[tuple[tuple[str, ...], str]]] = [
     (("gp_rcv", "tp_snd"), "data_rate"),
     (("cwnd", "swnd"), "cwnd"),
@@ -119,20 +119,14 @@ class CSVPlotter:
         metrics: Optional[Iterable[str]] = None,
         logger: Optional[logging.Logger] = None,
     ) -> None:
-        """
-        :param csv_path: Path to input CSV.
-        :param title: add filename stem as title.
-        :param out_fmt: sequence of output formats (png/pdf/svg).
-        :param metrics: subset of metrics to plot (default=None → all).
-        :param logger: optional custom logger.
-        """
         self.path = csv_path
         self.title = title
-        self.fmts = tuple(
-            fmt for fmt in out_fmt if fmt in VALID_FMT) or DEFAULT_FMT
+
+        fmt_list = [f for f in out_fmt if f in VALID_FMT]
+        self.fmts = tuple(dict.fromkeys(fmt_list)) or DEFAULT_FMT
+
         self.log = logger or logging.getLogger("CSVPlotter")
 
-        # determine internal metric keys to plot
         if metrics is None:
             self.metrics: Optional[Set[str]] = None
         else:
@@ -141,30 +135,28 @@ class CSVPlotter:
                 if m not in _METRIC_MAP:
                     continue
                 key = _METRIC_MAP[m]
-                # special: include variance if RTT requested
                 if m == "rtt":
-                    mset.add("rtt")
-                    mset.add("rtt_var")
+                    mset.update(("rtt", "rtt_var"))
                 else:
                     mset.add(key)
             self.metrics = mset
 
         self.log.debug(
-            "CSVPlotter initialized: path=%s title=%s fmts=%s metrics=%r",
-            self.path.name, self.title, self.fmts, self.metrics,
+            "Initialized: %s (title=%s, fmts=%r, metrics=%r)",
+            self.path.name, self.title, self.fmts, self.metrics
         )
 
     def plot(self) -> None:
         df = pd.read_csv(self.path)
         self.log.debug("Loaded %d rows from %s", len(df), self.path.name)
 
-        # convert RTT & variance from µs → ms
+        # convert µs → ms for RTT & variance
         if _has_data(df, _COLS["rtt"]):
             df["rtt_ms"] = df[_COLS["rtt"]] / 1_000.0
         if _has_data(df, _COLS["rtt_var"]):
             df["rtt_var_ms"] = df[_COLS["rtt_var"]] / 1_000.0
 
-        # compute mid-time & interval width
+        # compute mid-time & interval
         if _COLS["t"] in df and _COLS["t_end"] in df:
             df["mid_t"] = (df[_COLS["t"]] + df[_COLS["t_end"]]) / 2.0
             df["interval"] = df[_COLS["t_end"]] - df[_COLS["t"]]
@@ -172,7 +164,7 @@ class CSVPlotter:
             df["mid_t"] = df[_COLS["t"]]
             df["interval"] = 1.0
 
-        # choose which subplot blocks to render
+        # select blocks
         if self.metrics is None:
             blocks = [
                 (keys, suffix)
@@ -190,16 +182,12 @@ class CSVPlotter:
                     blocks.append((chosen, suffix))
 
         if not blocks:
-            self.log.info(
-                "No usable data in %s – nothing to plot.", self.path.name)
+            self.log.info("No data to plot in %s—skipping.", self.path.name)
             return
 
-        # create figure with one row per block
         fig, axes = plt.subplots(
-            nrows=len(blocks),
-            ncols=1,
-            figsize=(20, 6 * len(blocks)),
-            squeeze=False,
+            nrows=len(blocks), ncols=1,
+            figsize=(20, 6 * len(blocks)), squeeze=False
         )
         axes = axes.flatten()
 
@@ -215,15 +203,15 @@ class CSVPlotter:
             elif suffix == "rtt":
                 self._plot_rtt(df, ax, keys)
 
-        # uniform x-axis ticks & labels
+        # uniform x‑axis
         if len(df):
-            t_min = df[_COLS["t"]].min()
-            t_max = df[_COLS["t_end"]].max(
+            t0 = df[_COLS["t"]].min()
+            t1 = df[_COLS["t_end"]].max(
             ) if _COLS["t_end"] in df else df[_COLS["t"]].max()
-            ticks = np.arange(t_min, t_max + 10, 10)
+            ticks = np.arange(t0, t1 + 10, 10)
             for ax in axes:
                 ax.set_xticks(ticks)
-                ax.set_xlim(left=t_min, right=t_max)
+                ax.set_xlim(t0, t1)
                 ax.grid(True, axis="x")
             axes[-1].set_xlabel("Time (s)")
 
@@ -231,30 +219,57 @@ class CSVPlotter:
 
         for fmt in self.fmts:
             out = self.path.with_name(f"{self.path.stem}.plots.{fmt}")
+            self.log.debug("Saving %s", out.name)
             fig.savefig(out, dpi=PNG_DPI if fmt == "png" else None)
             self.log.info("Saved %s", out.name)
 
         plt.close(fig)
 
     def _plot_data_rate(self, df: pd.DataFrame, ax: Axes, keys: tuple[str, ...]) -> None:
-        """Plot receiver goodput and/or sender throughput."""
+        """
+        Plot receiver goodput and/or sender throughput,
+        auto‑scaling to bps, Kbps, Mbps, or Gbps.
+        """
+        raw_max = max(
+            (df[_COLS[k]].max() for k in keys if _has_data(df, _COLS[k])),
+            default=0.0
+        )
+        if raw_max >= 1e9:
+            scale, unit = 1e9, "Gb/s"
+        elif raw_max >= 1e6:
+            scale, unit = 1e6, "Mb/s"
+        elif raw_max >= 1e3:
+            scale, unit = 1e3, "Kb/s"
+        else:
+            scale, unit = 1.0, "b/s"
+
         colours = ("tab:blue", "tab:orange")
+        handles, labels = [], []
         for k, c in zip(keys, colours, strict=False):
             if _has_data(df, _COLS[k]):
-                sns.lineplot(
-                    x=_COLS["t"], y=_COLS[k], data=df, ax=ax,
-                    label=_LABELS[k], linewidth=1.5, color=c
+                line = sns.lineplot(
+                    x=df[_COLS["t"]],
+                    y=df[_COLS[k]] / scale,
+                    ax=ax,
+                    label=_LABELS[k],
+                    linewidth=1.5,
+                    color=c,
+                    legend=False,
                 )
-        ax.set_ylabel("Data rate (bps)")
-        ax.legend(loc="upper left")
+                handles.append(line.lines[0])
+                labels.append(_LABELS[k])
+
+        ax.set_ylabel(f"Data rate ({unit})")
+        ax.legend(handles, labels, loc="upper left",
+                  frameon=True, framealpha=0.8)
 
     def _plot_cwnd(self, df: pd.DataFrame, ax_left: Axes, keys: tuple[str, ...]) -> None:
-        """Plot CWND (left) and send-window (right)."""
+        """Plot CWND (left) and send‑window (right)."""
         handles, labels = [], []
 
         if "cwnd" in keys and _has_data(df, _COLS["cwnd"]):
             h = sns.lineplot(
-                x=_COLS["t"], y=_COLS["cwnd"], data=df,
+                x=df[_COLS["t"]], y=df[_COLS["cwnd"]],
                 ax=ax_left, linewidth=1.5, color="tab:green",
                 label=_LABELS["cwnd"], legend=False
             )
@@ -267,7 +282,7 @@ class CSVPlotter:
             ax_right = ax_left.twinx()
             ax_right.spines["right"].set_position(("outward", self._AX_STEP))
             h2 = sns.lineplot(
-                x=_COLS["t"], y=_COLS["swnd"], data=df,
+                x=df[_COLS["t"]], y=df[_COLS["swnd"]],
                 ax=ax_right, linewidth=1.5, color="tab:red",
                 label=_LABELS["swnd"], legend=False
             )
@@ -277,13 +292,14 @@ class CSVPlotter:
             ax_right.tick_params(axis="y", labelcolor="tab:red")
             ax_right.grid(False)
 
-        ax_left.legend(handles, labels, loc="upper left")
+        ax_left.legend(handles, labels, loc="upper left",
+                       frameon=True, framealpha=0.8)
 
     def _plot_rtt(self, df: pd.DataFrame, ax: Axes, keys: tuple[str, ...]) -> None:
         """Plot RTT ± variance and retransmissions."""
         handles, labels = [], []
 
-        # retransmissions bars
+        # retransmissions bars on right axis
         if "retx" in keys and _has_data(df, _COLS["retx"]):
             ax2 = ax.twinx()
             ax2.spines["right"].set_position(("outward", self._AX_STEP))
@@ -298,7 +314,7 @@ class CSVPlotter:
             ax2.tick_params(axis="y", labelcolor="tab:grey")
             ax2.grid(False)
 
-        # RTT ± variance band + line
+        # RTT ± variance band then RTT line on left axis
         if "rtt" in keys and _has_data(df, "rtt_ms"):
             if "rtt_var" in keys and _has_data(df, "rtt_var_ms"):
                 lower = (df["rtt_ms"] - df["rtt_var_ms"]).clip(lower=0)
@@ -310,22 +326,24 @@ class CSVPlotter:
                 )
                 handles.append(band)
                 labels.append(_LABELS["rtt_var"])
+
             line = sns.lineplot(
                 x="mid_t", y="rtt_ms", data=df,
                 ax=ax, linewidth=1.5, color="tab:purple",
-                label=_LABELS["rtt"], zorder=3
+                label=_LABELS["rtt"], zorder=3, legend=False
             )
             handles.append(line.lines[0])
             labels.append(_LABELS["rtt"])
 
         ax.set_ylabel("RTT (ms)", color="tab:purple")
         ax.tick_params(axis="y", labelcolor="tab:purple")
-        ax.legend(handles, labels, loc="upper left")
+        ax.legend(handles, labels, loc="upper left",
+                  frameon=True, framealpha=0.8)
 
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Plot qlog/QoE metrics from CSV.")
-    p.add_argument("files", nargs="+", type=Path, help="Input CSV files")
+    p.add_argument("files", nargs="+", type=Path, help="Input CSV file(s)")
     p.add_argument(
         "--add-title", action="store_true",
         help="Add filename stem as the figure title"
@@ -338,8 +356,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "-m", "--metrics", nargs="+", choices=sorted(_METRIC_MAP.keys()),
         metavar="METRIC",
         help=(
-            "Only plot these metrics (default=all). Choose from: "
-            + ", ".join(sorted(_METRIC_MAP.keys()))
+            "Only plot these metrics (default=all). "
+            "Choices: " + ", ".join(sorted(_METRIC_MAP.keys()))
         )
     )
     p.add_argument(
