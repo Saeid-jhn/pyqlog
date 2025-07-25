@@ -54,7 +54,7 @@ sns.set(style="whitegrid")
 # ---------------------------------------------------------------------------#
 # Constants & mappings                                                        #
 # ---------------------------------------------------------------------------#
-PNG_DPI: Final[int] = 600
+PNG_DPI: Final[int] = 300
 DEFAULT_FMT: Final[tuple[str, ...]] = ("png",)
 VALID_FMT: Final[Set[str]] = frozenset(("png", "pdf", "svg"))
 
