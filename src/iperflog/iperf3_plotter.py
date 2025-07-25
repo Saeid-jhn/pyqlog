@@ -1,3 +1,15 @@
+from __future__ import annotations
+import argparse
+import logging
+from pathlib import Path
+from typing import Final, Iterable, Optional, Sequence, Set
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
+from matplotlib.axes import Axes
+from matplotlib.patches import Patch
+
 #!/usr/bin/env python3
 """
 csv_plotter.py – publication‑quality visualisation of qlog‑derived CSVs
@@ -5,13 +17,14 @@ csv_plotter.py – publication‑quality visualisation of qlog‑derived CSVs
 selection of individual metrics.
 
 Data‑rate is auto‑scaled to bps, Kbps, Mbps, or Gbps based on your trace,
-and legends only show metric names (units are on the y‑axis).
+CWND and Send Window are auto‑scaled to KB, MB, or GB, and legends only show
+metric names (units are on the y‑axis).
 
 OUTPUT
 ------
 <stem>.plots.<fmt>
     ├─ data_rate : receiver goodput and/or sender throughput (auto‑scaled units)
-    ├─ cwnd      : CWND (left) and send window (right)
+    ├─ cwnd      : CWND (auto‑scaled units) and send window (auto‑scaled units)
     └─ rtt       : RTT ± variance (left) and retransmissions (right)
 
 By default, all available metrics are plotted. Use `-m/--metrics` to restrict
@@ -28,19 +41,7 @@ python csv_plotter.py run.csv -m receiver-goodput cwnd
 # Only RTT (with variance) + retransmits:
 python csv_plotter.py run.csv -m rtt retransmits
 """
-from __future__ import annotations
 
-import argparse
-import logging
-from pathlib import Path
-from typing import Final, Iterable, Optional, Sequence, Set
-
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
-import seaborn as sns
-from matplotlib.axes import Axes
-from matplotlib.patches import Patch
 
 # ---------------------------------------------------------------------------#
 # Global appearance                                                           #
@@ -86,8 +87,8 @@ _COLS: Final[dict[str, str]] = {
 _LABELS: Final[dict[str, str]] = {
     "gp_rcv":  "Receiver Goodput",
     "tp_snd":  "Sender Throughput",
-    "cwnd":    "CWND (K)",
-    "swnd":    "Send Window (K)",
+    "cwnd":    "CWND",
+    "swnd":    "Send Window",
     "retx":    "Retransmissions",
     "rtt":     "RTT (ms)",
     "rtt_var": "RTT ± var",
@@ -186,8 +187,10 @@ class CSVPlotter:
             return
 
         fig, axes = plt.subplots(
-            nrows=len(blocks), ncols=1,
-            figsize=(20, 6 * len(blocks)), squeeze=False
+            nrows=len(blocks),
+            ncols=1,
+            figsize=(20, 6 * len(blocks)),
+            squeeze=False,
         )
         axes = axes.flatten()
 
@@ -264,31 +267,55 @@ class CSVPlotter:
                   frameon=True, framealpha=0.8)
 
     def _plot_cwnd(self, df: pd.DataFrame, ax_left: Axes, keys: tuple[str, ...]) -> None:
-        """Plot CWND (left) and send‑window (right)."""
-        handles, labels = [], []
+        """
+        Plot CWND and Send Window,
+        auto‑scaling to KB, MB, or GB.
+        """
+        # find max raw value (in K)
+        raw_max = max(
+            (df[_COLS[k]].max() for k in keys if _has_data(df, _COLS[k])),
+            default=0.0
+        )
+        if raw_max >= 1e6:
+            scale, unit = 1e6, "GB"
+        elif raw_max >= 1e3:
+            scale, unit = 1e3, "MB"
+        else:
+            scale, unit = 1.0, "KB"
 
+        handles, labels = [], []
+        # CWND on left axis
         if "cwnd" in keys and _has_data(df, _COLS["cwnd"]):
             h = sns.lineplot(
-                x=df[_COLS["t"]], y=df[_COLS["cwnd"]],
-                ax=ax_left, linewidth=1.5, color="tab:green",
-                label=_LABELS["cwnd"], legend=False
+                x=df[_COLS["t"]],
+                y=df[_COLS["cwnd"]] / scale,
+                ax=ax_left,
+                linewidth=1.5,
+                color="tab:green",
+                label=_LABELS["cwnd"],
+                legend=False,
             )
             handles.append(h.lines[0])
             labels.append(_LABELS["cwnd"])
-            ax_left.set_ylabel("CWND (K)", color="tab:green")
+            ax_left.set_ylabel(f"CWND ({unit})", color="tab:green")
             ax_left.tick_params(axis="y", labelcolor="tab:green")
 
+        # Send Window on right axis
         if "swnd" in keys and _has_data(df, _COLS["swnd"]):
             ax_right = ax_left.twinx()
             ax_right.spines["right"].set_position(("outward", self._AX_STEP))
             h2 = sns.lineplot(
-                x=df[_COLS["t"]], y=df[_COLS["swnd"]],
-                ax=ax_right, linewidth=1.5, color="tab:red",
-                label=_LABELS["swnd"], legend=False
+                x=df[_COLS["t"]],
+                y=df[_COLS["swnd"]] / scale,
+                ax=ax_right,
+                linewidth=1.5,
+                color="tab:red",
+                label=_LABELS["swnd"],
+                legend=False,
             )
             handles.append(h2.lines[0])
             labels.append(_LABELS["swnd"])
-            ax_right.set_ylabel("Send Window (K)", color="tab:red")
+            ax_right.set_ylabel(f"Send Window ({unit})", color="tab:red")
             ax_right.tick_params(axis="y", labelcolor="tab:red")
             ax_right.grid(False)
 
