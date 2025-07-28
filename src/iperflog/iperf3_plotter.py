@@ -156,8 +156,8 @@ class CSVPlotter:
         serv = meta.get("remote_host", "")
         cli = meta.get("local_host", "")
         port = int(meta.get("remote_port", 0))
-        sender = "server" if str(
-            meta.get("test_start.reverse", "0")) == "1" else "client"
+        sender = "server" if int(
+            meta.get("test_start.reverse", "0")) == 1 else "client"
         proto = meta.get("test_start.protocol", "")
         snd_raw = int(meta.get("sndbuf_actual", 0))
         rcv_raw = int(meta.get("rcvbuf_actual", 0))
