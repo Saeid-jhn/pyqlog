@@ -235,7 +235,6 @@ class Plotter:
 
         ax1.set_ylabel("Throughput (bits/s)")
         ax1.yaxis.set_major_formatter(EngFormatter(unit="b"))
-        ax1.set_ylim(bottom=0)
         ax1.set_xlabel("Time (s)")
 
         if "Errors" in df.columns and df["Errors"].sum() > 0:
