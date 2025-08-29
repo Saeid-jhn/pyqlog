@@ -25,7 +25,7 @@ from typing import Dict, List, Optional, Tuple
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
-from matplotlib.ticker import FuncFormatter
+from matplotlib.ticker import EngFormatter
 
 # Increase default font sizes for publication-quality
 plt.rcParams.update({
@@ -233,7 +233,9 @@ class Plotter:
             ax1.plot(tot["Time_Bin"], tot["TotalThroughput"],
                      "--", label="Total")
 
-        ax1.set_ylabel("Throughput (Mbps)")
+        ax1.set_ylabel("Throughput (bits/s)")
+        ax1.yaxis.set_major_formatter(EngFormatter(unit="b"))
+        ax1.set_ylim(bottom=0)
         ax1.set_xlabel("Time (s)")
 
         if "Errors" in df.columns and df["Errors"].sum() > 0:
