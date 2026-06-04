@@ -4,14 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyqlog"
-version = "0.1.0"
+version = "0.2.0"
 description = "General purpose qlog, pcap, iperf parsers & visualizers"
 readme = "README.md"
 license = { text = "Apache-2.0" }
+requires-python = ">=3.9"
 authors = [
   { name = "Saeid Jahandar"},
 ]
-# Runtime dependencies pull in all the libraries your scripts import
+# Runtime dependencies pull in all the libraries the package imports.
+# pcap analysis additionally requires the `tshark` CLI on PATH (not a pip dep).
 dependencies = [
   "numpy>=1.18",
   "pandas>=1.0",
@@ -19,10 +21,16 @@ dependencies = [
   "seaborn>=0.10",
 ]
 
+[project.optional-dependencies]
+test = ["pytest>=7.0"]
+
+[project.scripts]
+pyqlog = "pyqlog.cli:main"
+
 [project.urls]
 "Repository" = "https://github.com/Saeid-jhn/pyqlog"
 
 [tool.setuptools.packages.find]
 # look for modules under src/
 where = ["src"]
-include = ["pcap", "iperflog", "qlog"]
+include = ["pyqlog*"]

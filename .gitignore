@@ -3,3 +3,11 @@ build/
 *.egg-info/
 *.egg
 *.pyc
+
+# Virtual environments
+.venv/
+venv/
+
+# Caches
+__pycache__/
+.pytest_cache/
