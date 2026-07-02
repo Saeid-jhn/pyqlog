@@ -15,12 +15,16 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from .core import AnalysisResult
+from .core.batch import run_many
 from .registry import (
     get_analyzer_class, get_plotter_class, resolve_kind,
 )
+
+# A batch item for plot_many: a path plus the per-file kwargs plot() accepts.
+PlotJob = Tuple[str, dict]
 
 # Which constructor kwargs each kind's analyzer / plotter accepts. Used to route
 # the flat facade options to the right class without leaking irrelevant ones.
@@ -77,6 +81,43 @@ def plot(
 
     return _render(result, kind, out_dir=out_dir, formats=formats,
                    prefix=prefix, opts=opts)
+
+
+def _plot_job(job: "PlotJob") -> "Tuple[str, Optional[List[Path]], Optional[str]]":
+    """Worker for :func:`plot_many`: plot one ``(path, kwargs)`` job.
+
+    Module-level (so it pickles to a process pool) and never raises — one bad log
+    must not kill the batch. Returns ``(path, image_paths, error)`` where exactly
+    one of ``image_paths`` / ``error`` is set.
+    """
+    path, kwargs = job
+    try:
+        return (path, plot(path, **kwargs), None)
+    except Exception as exc:  # keep one bad file from killing the batch
+        return (path, None, str(exc))
+
+
+def plot_many(
+    jobs: "Iterable[PlotJob]",
+    *,
+    parallel: bool = True,
+    workers: Optional[int] = None,
+) -> "List[Tuple[str, Optional[List[Path]], Optional[str]]]":
+    """Plot many artifacts concurrently, each with its own per-file options.
+
+    Each job is a ``(path, kwargs)`` pair, where ``kwargs`` are the same keyword
+    options :func:`plot` accepts (``out_dir``, ``formats``, ``save_csv``,
+    ``kind``, and any analyzer/plotter opts such as pcap ``ports``). Because
+    ``plot`` is single-file, this is the public entry point for callers that need
+    to render a whole directory of logs in parallel (the ``pyqlog`` CLI plots
+    multiple input files the same way).
+
+    ``workers`` caps the process-pool size (default: one per CPU); ``parallel=
+    False`` or a single job renders sequentially. Rendering is CPU-bound, so it
+    scales well. Failures are captured per job rather than raised: returns a list
+    of ``(path, image_paths, error)`` in input order, one per job.
+    """
+    return run_many(_plot_job, list(jobs), parallel=parallel, workers=workers)
 
 
 def replot(

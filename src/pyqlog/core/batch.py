@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from multiprocessing import Pool, cpu_count
-from typing import Callable, Iterable, List, Sequence, Tuple, TypeVar
+from typing import Callable, Iterable, List, Optional, Sequence, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -18,16 +18,20 @@ def run_many(
     *,
     extra_args: Tuple = (),
     parallel: bool = True,
+    workers: Optional[int] = None,
 ) -> List[R]:
     """Apply ``fn(item, *extra_args)`` to every item, optionally in parallel.
 
-    Falls back to sequential execution for a single item or when ``parallel`` is
-    False (handy for debugging, since multiprocessing hides tracebacks).
+    ``workers`` caps the process-pool size (default: one per CPU). Falls back to
+    sequential execution for a single item, when ``parallel`` is False, or when
+    the effective pool size is 1 (handy for debugging, since multiprocessing
+    hides tracebacks).
     """
     work: Iterable[Tuple] = [(item, *extra_args) for item in items]
 
-    if not parallel or len(items) <= 1:
+    n = min(workers or cpu_count(), len(items))
+    if not parallel or n <= 1:
         return [fn(*args) for args in work]
 
-    with Pool(min(cpu_count(), len(items))) as pool:
+    with Pool(n) as pool:
         return pool.starmap(fn, work)

@@ -12,17 +12,18 @@ For full control, use the explicit classes (``QlogAnalyzer``/``QlogPlotter``,
 """
 
 from .core import AnalysisResult
-from .facade import analyze, plot, replot
+from .facade import analyze, plot, plot_many, replot
 from .registry import detect_kind
 from .qlog import QlogAnalyzer, QlogPlotter
 from .iperf import IperfAnalyzer, IperfPlotter
 from .pcap import PcapAnalyzer, PcapPlotter
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "analyze",
     "plot",
+    "plot_many",
     "replot",
     "detect_kind",
     "AnalysisResult",
